@@ -3,3 +3,5 @@
 dagster_home/
 __pycache__/
 *.egg-info/
+dbt_stub/target/
+dbt_stub/dbt_packages/

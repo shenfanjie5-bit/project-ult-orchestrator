@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: phase0_stub
+    schema: main
+    tables:
+      - name: heartbeat_source
+
+models:
+  - name: heartbeat
+    columns:
+      - name: heartbeat
+        tests:
+          - not_null

@@ -1,0 +1,21 @@
+name: orchestrator_stub
+version: "1.0.0"
+config-version: 2
+
+profile: orchestrator_stub
+
+model-paths:
+  - models
+
+target-path: target
+clean-targets:
+  - target
+  - dbt_packages
+
+models:
+  orchestrator_stub:
+    phase0:
+      +materialized: view
+      +meta:
+        dagster:
+          group: phase0
