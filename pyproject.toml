@@ -7,12 +7,25 @@ name = "project-ult-orchestrator"
 version = "0.1.0"
 description = "Scaffold workspace for orchestrator."
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    "dagster",
+    "dagster-dbt",
+    "pydantic",
+    "pyyaml",
+]
 
-[tool.setuptools]
-packages = []
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "mypy",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
+pythonpath = ["src"]
 testpaths = ["tests"]
