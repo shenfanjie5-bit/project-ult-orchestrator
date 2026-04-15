@@ -1,4 +1,4 @@
-.PHONY: install test lint dagster-dev dbt-compile
+.PHONY: install test integration-test lint dagster-dev dbt-compile
 
 install:
 	python3 -m pip install -e ".[dev]"
@@ -6,11 +6,15 @@ install:
 test:
 	python3 -m pytest -q
 
+integration-test:
+	python3 -m pytest tests/integration -v --tb=short
+
 lint:
 	python3 -m mypy src tests
 
 dagster-dev:
 	DAGSTER_HOME=./dagster_home dagster dev -m orchestrator.definitions
 
-dbt-compile:
+dbt-compile:  ## requires the dev extra: dbt-core + dbt-duckdb
+	mkdir -p dbt_stub/dagster_home
 	cd dbt_stub && dbt compile --profiles-dir . --project-dir .
