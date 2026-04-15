@@ -17,6 +17,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "dbt-core",
+    "dbt-duckdb",
     "pytest",
     "pytest-asyncio",
     "mypy",
