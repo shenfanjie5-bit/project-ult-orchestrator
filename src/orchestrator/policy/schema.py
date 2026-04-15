@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from orchestrator.policy.contracts_adapter import FailureClass, GateAction, PhaseEnum
 
@@ -32,6 +32,21 @@ class GatePolicyProfile(BaseModel):
     thresholds: dict[str, float]
     alert_channels: list[str]
     updated_at: datetime
+
+    @model_validator(mode="after")
+    def reject_duplicate_phase_matrix_entries(self) -> "GatePolicyProfile":
+        seen: set[tuple[PhaseEnum, FailureClass]] = set()
+        for entry in self.phase_matrix:
+            key = (entry.phase, entry.failure_class)
+            if key in seen:
+                msg = (
+                    "duplicate phase_matrix entry for "
+                    f"phase={entry.phase.value} "
+                    f"failure_class={entry.failure_class.value}"
+                )
+                raise ValueError(msg)
+            seen.add(key)
+        return self
 
 
 __all__ = ["GatePolicyProfile", "PhaseMatrixEntry"]
