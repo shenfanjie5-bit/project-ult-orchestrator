@@ -4,9 +4,7 @@ from collections.abc import Iterable
 from dataclasses import FrozenInstanceError, dataclass
 from datetime import datetime
 
-from dagster import ResourceDefinition
-
-from orchestrator.resources.providers import AssetFactoryProvider
+from orchestrator.resources.providers import AssetFactoryProvider, ResourceDefinition
 
 
 @dataclass
@@ -18,8 +16,12 @@ class ResourceBundle:
     read_only: bool
 
     def __setattr__(self, name: str, value: object) -> None:
-        if getattr(self, "read_only", False) and name in self.__dataclass_fields__:
-            msg = f"cannot assign to field {name!r}: ResourceBundle is read-only"
+        if getattr(self, "read_only", False):
+            field_names = type(self).__dataclass_fields__
+            if name in field_names:
+                msg = f"cannot assign to field {name!r}: ResourceBundle is read-only"
+            else:
+                msg = f"cannot assign attribute {name!r}: ResourceBundle is read-only"
             raise FrozenInstanceError(msg)
         super().__setattr__(name, value)
 
