@@ -17,3 +17,9 @@ Execution rule:
 1. read the project doc first
 2. keep work inside this module unless the issue explicitly targets shared contracts
 3. do not treat this scaffold as finished implementation
+
+## 本地运行 Dagster UI
+
+```bash
+dagster dev -m orchestrator.definitions
+```
