@@ -1,0 +1,40 @@
+"""Phase 0 Dagster asset wiring."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Iterator
+
+from dagster import AssetExecutionContext, asset
+from dagster_dbt import DbtCliResource, dbt_assets
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DBT_PROJECT_DIR_ENV = os.environ.get("ORCHESTRATOR_DBT_PROJECT_DIR")
+DBT_PROJECT_DIR = (
+    Path(_DBT_PROJECT_DIR_ENV) if _DBT_PROJECT_DIR_ENV else _REPO_ROOT / "dbt_stub"
+).expanduser()
+DBT_PROFILES_DIR = DBT_PROJECT_DIR
+DBT_MANIFEST_PATH = DBT_PROJECT_DIR / "target" / "manifest.json"
+
+
+@asset(group_name="phase0")
+def phase0_readiness_ping() -> str:
+    return "ok"
+
+
+@dbt_assets(manifest=DBT_MANIFEST_PATH)
+def dbt_phase0_assets(
+    context: AssetExecutionContext,
+    dbt: DbtCliResource,
+) -> Iterator[object]:
+    yield from dbt.cli(
+        [
+            "build",
+            "--project-dir",
+            str(DBT_PROJECT_DIR),
+            "--profiles-dir",
+            str(DBT_PROFILES_DIR),
+        ],
+        context=context,
+    ).stream()

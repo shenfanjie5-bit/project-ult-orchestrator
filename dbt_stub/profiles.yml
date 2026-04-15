@@ -1,0 +1,6 @@
+orchestrator_stub:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: ./dagster_home/stub.duckdb
