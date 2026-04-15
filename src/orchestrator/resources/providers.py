@@ -3,14 +3,7 @@
 from collections.abc import Mapping, Sequence
 from typing import Protocol, runtime_checkable
 
-try:
-    from dagster import ResourceDefinition
-except ModuleNotFoundError as exc:  # pragma: no cover - exercised when Dagster is absent
-    if exc.name != "dagster":
-        raise
-
-    class ResourceDefinition:
-        """Fallback marker used only when Dagster is not installed."""
+from dagster import ResourceDefinition
 
 
 @runtime_checkable

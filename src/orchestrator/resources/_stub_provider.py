@@ -3,16 +3,7 @@
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from orchestrator.resources.providers import ResourceDefinition
-
-try:
-    from dagster import ConfigurableResource
-except ModuleNotFoundError as exc:  # pragma: no cover - exercised when Dagster is absent
-    if exc.name != "dagster":
-        raise
-
-    class ConfigurableResource(ResourceDefinition):
-        """Fallback base used only when Dagster is not installed."""
+from dagster import ConfigurableResource, ResourceDefinition
 
 
 class OrchestrationContextStubResource(ConfigurableResource):

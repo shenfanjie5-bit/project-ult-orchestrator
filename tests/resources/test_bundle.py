@@ -11,6 +11,13 @@ from orchestrator.resources import (
 from orchestrator.resources._stub_provider import StubProvider
 
 
+def test_dagster_resource_types_are_real_imports() -> None:
+    from dagster import ConfigurableResource, ResourceDefinition
+
+    assert ConfigurableResource.__module__.startswith("dagster")
+    assert ResourceDefinition.__module__.startswith("dagster")
+
+
 def test_stub_provider_injects_bootstrap_resource() -> None:
     provider = StubProvider()
 
@@ -50,6 +57,20 @@ def test_read_only_resource_bundle_rejects_field_mutation() -> None:
     assert replace(bundle, config_ref="lite-replaced").config_ref == "lite-replaced"
     with pytest.raises(FrozenInstanceError):
         bundle.config_ref = "mutated"
+
+
+def test_read_only_resource_bundle_has_no_dict_mutation_bypass() -> None:
+    bundle = ResourceBundle(
+        resource_keys=("orchestration_context_stub",),
+        source_modules=("stub",),
+        config_ref="lite",
+        injected_at=datetime(2026, 4, 16, tzinfo=timezone.utc),
+        read_only=True,
+    )
+
+    with pytest.raises(AttributeError):
+        bundle.__dict__["config_ref"] = "mutated"
+    assert bundle.config_ref == "lite"
 
 
 def test_read_only_resource_bundle_rejects_metadata_shadowing_bypass() -> None:

@@ -7,7 +7,7 @@ from datetime import datetime
 from orchestrator.resources.providers import AssetFactoryProvider, ResourceDefinition
 
 
-@dataclass
+@dataclass(slots=True)
 class ResourceBundle:
     resource_keys: tuple[str, ...]
     source_modules: tuple[str, ...]
@@ -23,7 +23,7 @@ class ResourceBundle:
             else:
                 msg = f"cannot assign attribute {name!r}: ResourceBundle is read-only"
             raise FrozenInstanceError(msg)
-        super().__setattr__(name, value)
+        object.__setattr__(self, name, value)
 
 
 def build_resource_bundle(
