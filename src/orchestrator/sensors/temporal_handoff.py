@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from dagster import RunRequest, SensorEvaluationContext, SkipReason, sensor
@@ -23,8 +25,26 @@ GATE_POLICY_RESOURCE_KEY = "gate_policy"
 RESOURCE_BUNDLE_RESOURCE_KEY = "resource_bundle"
 TEMPORAL_HANDOFF_SENSOR_NAME = "temporal_handoff_sensor"
 TEMPORAL_HANDOFF_SENSOR_REQUIRED_RESOURCE_KEYS = frozenset(
-    {GATE_POLICY_RESOURCE_KEY},
+    {
+        GATE_POLICY_RESOURCE_KEY,
+        RESOURCE_BUNDLE_RESOURCE_KEY,
+        TEMPORAL_HANDOFF_CLIENT_RESOURCE_KEY,
+    },
 )
+_TEMPORAL_HANDOFF_CURSOR_VERSION = 1
+_TEMPORAL_WORKFLOW_ID_TAG = "temporal_workflow_id"
+
+
+@dataclass(frozen=True, slots=True)
+class _HandoffCursor:
+    processed_run_ids: frozenset[str] = frozenset()
+    high_water_timestamp: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Phase0RunCandidate:
+    raw_run: object
+    run: object
 
 
 def evaluate_temporal_handoff_sensor(
@@ -104,16 +124,15 @@ def build_temporal_handoff_sensor(
     def _temporal_handoff_sensor(
         context: SensorEvaluationContext,
     ) -> RunRequest | SkipReason:
-        phase0_run = _latest_successful_phase0_run(context, phase0_job_name)
-        if phase0_run is None:
+        cursor = _parse_handoff_cursor(context.cursor)
+        candidate = _latest_successful_phase0_run(context, phase0_job_name, cursor)
+        if candidate is None:
             return SkipReason(
                 f"no successful {phase0_job_name} run is ready for Temporal handoff",
             )
 
+        phase0_run = candidate.run
         phase0_run_id = _run_id(phase0_run)
-        if context.cursor == phase0_run_id:
-            return SkipReason(f"Temporal handoff already evaluated for {phase0_run_id}")
-
         run_tags = _string_tags(_run_tags(phase0_run))
         cycle_id = _cycle_id_from_run(phase0_run, run_tags)
         result = evaluate_temporal_handoff_sensor(
@@ -121,13 +140,23 @@ def build_temporal_handoff_sensor(
             phase0_run_id=phase0_run_id,
             dagster_run_id=phase0_run_id,
             cycle_id=cycle_id,
-            tags=run_tags,
+            tags=_temporal_handoff_tags(
+                run_tags,
+                cycle_id=cycle_id,
+                phase0_run_id=phase0_run_id,
+            ),
             client=_handoff_client_from_context(context),
             failover_mode=failover_mode,
             failover_job_name=failover_job_name,
         )
         if _handoff_result_consumed_phase0_run(result):
-            context.update_cursor(phase0_run_id)
+            context.update_cursor(
+                _advance_handoff_cursor(
+                    cursor,
+                    raw_run=candidate.raw_run,
+                    run=phase0_run,
+                )
+            )
         return result
 
     return _temporal_handoff_sensor
@@ -174,27 +203,45 @@ def _handoff_result_consumed_phase0_run(result: RunRequest | SkipReason) -> bool
 def _latest_successful_phase0_run(
     context: SensorEvaluationContext,
     phase0_job_name: str,
-) -> object | None:
+    cursor: _HandoffCursor,
+) -> _Phase0RunCandidate | None:
     instance = getattr(context, "instance", None)
     if instance is None:
         return None
 
+    candidates: list[_Phase0RunCandidate] = []
     for raw_run in _query_runs(instance, phase0_job_name):
         run = _dagster_run(raw_run)
-        if _run_id_or_none(run) == context.cursor:
-            continue
         if _run_job_name(run) != phase0_job_name:
             continue
         if not _run_succeeded(run):
             continue
-        return run
+        if _cursor_consumed_phase0_run(cursor, raw_run=raw_run, run=run):
+            if cursor.high_water_timestamp is None:
+                break
+            continue
+        candidates.append(_Phase0RunCandidate(raw_run=raw_run, run=run))
 
-    return None
+    if not candidates:
+        return None
+
+    candidates_with_timestamps = [
+        candidate
+        for candidate in candidates
+        if _run_timestamp(candidate.raw_run, candidate.run) is not None
+    ]
+    if candidates_with_timestamps:
+        return max(
+            candidates_with_timestamps,
+            key=lambda candidate: _run_timestamp(candidate.raw_run, candidate.run)
+            or 0.0,
+        )
+    return candidates[0]
 
 
 def _query_runs(instance: object, phase0_job_name: str) -> tuple[object, ...]:
     filters = _runs_filter(phase0_job_name)
-    for method_name in ("get_runs", "get_run_records"):
+    for method_name in ("get_run_records", "get_runs"):
         method = getattr(instance, method_name, None)
         if not callable(method):
             continue
@@ -283,6 +330,154 @@ def _cycle_id_from_run(run: object, tags: Mapping[str, str]) -> str:
     if cycle_id:
         return cycle_id
     return _run_id(run)
+
+
+def _parse_handoff_cursor(raw_cursor: str | None) -> _HandoffCursor:
+    if not raw_cursor:
+        return _HandoffCursor()
+
+    try:
+        decoded = json.loads(raw_cursor)
+    except json.JSONDecodeError:
+        return _HandoffCursor(processed_run_ids=frozenset({raw_cursor}))
+
+    if not isinstance(decoded, Mapping):
+        return _HandoffCursor(processed_run_ids=frozenset({raw_cursor}))
+
+    processed_run_ids = {
+        value
+        for value in decoded.get("processed_run_ids", ())
+        if isinstance(value, str) and value
+    }
+    last_run_id = decoded.get("last_run_id")
+    if isinstance(last_run_id, str) and last_run_id:
+        processed_run_ids.add(last_run_id)
+
+    high_water_timestamp = decoded.get("high_water_timestamp")
+    if isinstance(high_water_timestamp, bool):
+        timestamp = None
+    elif isinstance(high_water_timestamp, (int, float)):
+        timestamp = float(high_water_timestamp)
+    else:
+        timestamp = None
+
+    return _HandoffCursor(
+        processed_run_ids=frozenset(processed_run_ids),
+        high_water_timestamp=timestamp,
+    )
+
+
+def _advance_handoff_cursor(
+    cursor: _HandoffCursor,
+    *,
+    raw_run: object,
+    run: object,
+) -> str:
+    run_id = _run_id(run)
+    processed_run_ids = set(cursor.processed_run_ids)
+    processed_run_ids.add(run_id)
+
+    run_timestamp = _run_timestamp(raw_run, run)
+    high_water_timestamp = cursor.high_water_timestamp
+    if run_timestamp is not None:
+        high_water_timestamp = max(
+            high_water_timestamp if high_water_timestamp is not None else run_timestamp,
+            run_timestamp,
+        )
+
+    payload: dict[str, object] = {
+        "version": _TEMPORAL_HANDOFF_CURSOR_VERSION,
+        "last_run_id": run_id,
+        "processed_run_ids": sorted(processed_run_ids),
+    }
+    if high_water_timestamp is not None:
+        payload["high_water_timestamp"] = high_water_timestamp
+
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+
+def _cursor_consumed_phase0_run(
+    cursor: _HandoffCursor,
+    *,
+    raw_run: object,
+    run: object,
+) -> bool:
+    run_id = _run_id_or_none(run)
+    if run_id is not None and run_id in cursor.processed_run_ids:
+        return True
+
+    run_timestamp = _run_timestamp(raw_run, run)
+    return (
+        cursor.high_water_timestamp is not None
+        and run_timestamp is not None
+        and run_timestamp <= cursor.high_water_timestamp
+    )
+
+
+def _run_timestamp(raw_run: object, run: object) -> float | None:
+    for source in (raw_run, run):
+        for attribute_name in (
+            "create_timestamp",
+            "start_time",
+            "end_time",
+            "update_timestamp",
+            "timestamp",
+        ):
+            value = _mapping_or_attr(source, attribute_name)
+            parsed = _timestamp_value(value)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _timestamp_value(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    timestamp = getattr(value, "timestamp", None)
+    if callable(timestamp):
+        parsed = timestamp()
+        if isinstance(parsed, (int, float)):
+            return float(parsed)
+    return None
+
+
+def _temporal_handoff_tags(
+    tags: Mapping[str, str],
+    *,
+    cycle_id: str,
+    phase0_run_id: str,
+) -> dict[str, str]:
+    handoff_tags = dict(tags)
+    handoff_tags.setdefault(
+        _TEMPORAL_WORKFLOW_ID_TAG,
+        _deterministic_temporal_workflow_id(
+            cycle_id=cycle_id,
+            phase0_run_id=phase0_run_id,
+        ),
+    )
+    return handoff_tags
+
+
+def _deterministic_temporal_workflow_id(
+    *,
+    cycle_id: str,
+    phase0_run_id: str,
+) -> str:
+    return (
+        "orchestrator-cycle-"
+        f"{_workflow_id_component(cycle_id)}-"
+        f"phase1-3-{_workflow_id_component(phase0_run_id)}"
+    )
+
+
+def _workflow_id_component(value: str) -> str:
+    return "".join(
+        character if character.isalnum() or character in {"-", "_"} else "-"
+        for character in value
+    ).strip("-") or "unknown"
 
 
 def _gate_policy_from_context(context: SensorEvaluationContext) -> GatePolicyProfile:
