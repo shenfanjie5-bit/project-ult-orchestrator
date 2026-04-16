@@ -85,24 +85,27 @@ def test_manual_rerun_sensor_emits_run_request(
         "failed_node": "phase0_readiness_ping",
         "rerun_mode": "asset_only",
     }
-    assert not (tmp_path / "request.json").exists()
-    assert (tmp_path / ".processed" / "request.json").exists()
+    assert result.run_key == (
+        "manual-rerun:r1:phase0_readiness_ping:2026-04-16T00:00:00+00:00"
+    )
+    assert (tmp_path / "request.json").exists()
+    assert not (tmp_path / ".processed" / "request.json").exists()
 
 
-def test_processed_manual_rerun_request_is_not_repeated(
+def test_pending_manual_rerun_request_uses_stable_run_key(
     tmp_path: Path,
     sensor_exports: dict[str, Any],
 ) -> None:
     evaluate_manual_rerun_requests = sensor_exports["evaluate_manual_rerun_requests"]
-    SkipReason = sensor_exports["SkipReason"]
     _write_request(tmp_path / "request.json")
 
     first_result = evaluate_manual_rerun_requests(tmp_path)
     second_result = evaluate_manual_rerun_requests(tmp_path)
 
     assert first_result.__class__.__name__ == "RunRequest"
-    assert isinstance(second_result, SkipReason)
-    assert "no manual rerun requests" in second_result.skip_message
+    assert second_result.__class__.__name__ == "RunRequest"
+    assert first_result.run_key == second_result.run_key
+    assert (tmp_path / "request.json").exists()
 
 
 def test_manual_rerun_sensor_invalid_json_returns_skip_reason(
@@ -117,6 +120,10 @@ def test_manual_rerun_sensor_invalid_json_returns_skip_reason(
 
     assert isinstance(result, SkipReason)
     assert "invalid manual rerun request JSON" in result.skip_message
+    assert not (tmp_path / "request.json").exists()
+    assert (tmp_path / ".failed" / "request.json").exists()
+    error = (tmp_path / ".failed" / "request.json.error.txt").read_text(encoding="utf-8")
+    assert "invalid manual rerun request JSON" in error
 
 
 def test_manual_rerun_sensor_unknown_rerun_mode_returns_skip_reason(
@@ -131,6 +138,28 @@ def test_manual_rerun_sensor_unknown_rerun_mode_returns_skip_reason(
 
     assert isinstance(result, SkipReason)
     assert "unknown rerun_mode" in result.skip_message
+    assert not (tmp_path / "request.json").exists()
+    assert (tmp_path / ".failed" / "request.json").exists()
+
+
+def test_manual_rerun_sensor_invalid_request_does_not_starve_valid_later_request(
+    tmp_path: Path,
+    sensor_exports: dict[str, Any],
+) -> None:
+    evaluate_manual_rerun_requests = sensor_exports["evaluate_manual_rerun_requests"]
+    RunRequest = sensor_exports["RunRequest"]
+    (tmp_path / "00-invalid.json").write_text("{not-json", encoding="utf-8")
+    _write_request(tmp_path / "01-valid.json")
+
+    result = evaluate_manual_rerun_requests(tmp_path)
+
+    assert isinstance(result, RunRequest)
+    assert result.run_key == (
+        "manual-rerun:r1:phase0_readiness_ping:2026-04-16T00:00:00+00:00"
+    )
+    assert not (tmp_path / "00-invalid.json").exists()
+    assert (tmp_path / ".failed" / "00-invalid.json").exists()
+    assert (tmp_path / "01-valid.json").exists()
 
 
 def _write_request(path: Path, *, rerun_mode: str = "asset_only") -> None:
@@ -164,4 +193,3 @@ def _asset_selection_strings(asset_selection: object) -> list[str]:
             continue
         output.append(str(asset_key))
     return output
-

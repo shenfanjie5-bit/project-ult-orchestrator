@@ -13,7 +13,7 @@ from orchestrator.cli.rerun import DEFAULT_REQUEST_DIR
 from orchestrator.jobs.cycle import daily_cycle_job
 
 _REQUEST_DIR_ENV = "ORCHESTRATOR_RERUN_REQUEST_DIR"
-_PROCESSED_DIR_NAME = ".processed"
+_FAILED_DIR_NAME = ".failed"
 _ALLOWED_RERUN_MODES = frozenset({"repair_only", "asset_only", "phase_only"})
 
 
@@ -35,28 +35,23 @@ def evaluate_manual_rerun_requests(request_dir: Path) -> RunRequest | SkipReason
     if not request_files:
         return SkipReason(f"no manual rerun requests found in {request_dir}")
 
-    request_path = request_files[0]
-    payload, error = _load_request(request_path)
-    if error is not None:
-        return SkipReason(error)
+    diagnostics: list[str] = []
+    for request_path in request_files:
+        payload, error = _load_request(request_path)
+        if error is not None:
+            diagnostics.append(error)
+            diagnostics.extend(_quarantine_invalid_request(request_dir, request_path, error))
+            continue
 
-    assert payload is not None
-    try:
-        run_request = _build_run_request(payload)
-    except Exception as exc:
-        return SkipReason(
-            f"invalid manual rerun request {request_path.name}: {exc}",
-        )
+        assert payload is not None
+        try:
+            return _build_run_request(payload)
+        except Exception as exc:
+            error = f"invalid manual rerun request {request_path.name}: {exc}"
+            diagnostics.append(error)
+            diagnostics.extend(_quarantine_invalid_request(request_dir, request_path, error))
 
-    try:
-        _ack_request(request_dir, request_path)
-    except OSError as exc:
-        return SkipReason(
-            f"failed to mark manual rerun request processed "
-            f"{request_path.name}: {exc}",
-        )
-
-    return run_request
+    return SkipReason("; ".join(diagnostics))
 
 
 def _load_request(request_path: Path) -> tuple[dict[str, Any] | None, str | None]:
@@ -171,10 +166,25 @@ def _build_run_request(payload: dict[str, Any]) -> RunRequest:
         )
 
 
-def _ack_request(request_dir: Path, request_path: Path) -> None:
-    processed_dir = request_dir / _PROCESSED_DIR_NAME
-    processed_dir.mkdir(exist_ok=True)
-    request_path.replace(processed_dir / request_path.name)
+def _quarantine_invalid_request(
+    request_dir: Path,
+    request_path: Path,
+    error: str,
+) -> list[str]:
+    failed_dir = request_dir / _FAILED_DIR_NAME
+    try:
+        failed_dir.mkdir(exist_ok=True)
+        request_path.replace(failed_dir / request_path.name)
+        (failed_dir / f"{request_path.name}.error.txt").write_text(
+            error + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return [
+            f"failed to quarantine invalid manual rerun request "
+            f"{request_path.name}: {exc}",
+        ]
+    return []
 
 
 def _is_non_empty_str(value: object) -> bool:
@@ -182,4 +192,3 @@ def _is_non_empty_str(value: object) -> bool:
 
 
 __all__ = ["evaluate_manual_rerun_requests", "manual_rerun_sensor"]
-
