@@ -217,6 +217,22 @@ def test_module_level_defs_loads_configured_milestone_surface(
         _clear_definition_imports()
 
 
+def test_require_milestone_surface_env_false_overrides_profile(
+    definitions_exports: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import orchestrator.definitions as definitions_module
+
+    monkeypatch.setenv("ORCHESTRATOR_DEFINITIONS_PROFILE", "milestone-1")
+    monkeypatch.setenv("ORCHESTRATOR_REQUIRE_MILESTONE_SURFACE", "false")
+
+    assert definitions_module._requires_milestone_surface() is False
+
+    monkeypatch.setenv("ORCHESTRATOR_REQUIRE_MILESTONE_SURFACE", "true")
+
+    assert definitions_module._requires_milestone_surface() is True
+
+
 def test_build_definitions_is_loadable(
     definitions_exports: dict[str, Any],
 ) -> None:
