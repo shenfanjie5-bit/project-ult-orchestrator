@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from orchestrator.rerun_request import DEFAULT_REQUEST_DIR, write_rerun_request
 _RERUN_REQUEST_DIR_ENV = "ORCHESTRATOR_RERUN_REQUEST_DIR"
 _FAILED_DBT_RESULT_STATUSES = frozenset({"error", "fail"})
 _DEFAULT_FAILED_DBT_ASSET_KEY = "dbt_test_failure"
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +51,12 @@ class _FallbackAssetObservation:
     asset_key: str
     metadata: Mapping[str, object]
     description: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DbtArtifactExtractionError:
+    artifact_name: str
+    error: str
 
 
 def classify_dbt_test_failure(
@@ -109,10 +117,22 @@ def stream_dbt_events_with_gate_handling(
         stream_error = exc
         stream_traceback = exc.__traceback__
 
-    failed_events.extend(_failed_dbt_test_gate_events_from_artifacts(dbt_invocation))
+    run_id = _run_id_from_context(context)
+    artifact_events, artifact_errors = _failed_dbt_test_gate_events_from_artifacts(
+        dbt_invocation,
+    )
+    failed_events.extend(artifact_events)
+    for artifact_error in artifact_errors:
+        _LOGGER.warning(
+            "dbt artifact extraction failed; run_id=%s artifact=%s error=%s",
+            run_id,
+            artifact_error.artifact_name,
+            artifact_error.error,
+        )
+
     handling_results = handle_dbt_test_failures(
         failed_events,
-        run_id=_run_id_from_context(context),
+        run_id=run_id,
         policy=policy,
         request_dir=request_dir,
         cycle_id=_cycle_id_from_context(context),
@@ -130,6 +150,14 @@ def stream_dbt_events_with_gate_handling(
             stream_error.add_note(
                 "orchestrator rerun request write error(s): "
                 + "; ".join(write_errors),
+            )
+        if artifact_errors and hasattr(stream_error, "add_note"):
+            stream_error.add_note(
+                "orchestrator dbt artifact extraction error(s): "
+                + "; ".join(
+                    f"{error.artifact_name}: {error.error}"
+                    for error in artifact_errors
+                ),
             )
         raise stream_error.with_traceback(stream_traceback)
 
@@ -251,7 +279,7 @@ def _build_gate_observation(result: DbtGateHandlingResult) -> object:
             metadata=metadata,
             description=description,
         )
-    except ModuleNotFoundError:
+    except Exception:
         return _FallbackAssetObservation(
             asset_key=asset_key,
             metadata=metadata,
@@ -307,18 +335,26 @@ def _failed_dbt_test_gate_events_from_stream_event(
 
 def _failed_dbt_test_gate_events_from_artifacts(
     dbt_invocation: object,
-) -> tuple[_DbtGateEvent, ...]:
-    run_results = _dbt_artifact(dbt_invocation, "run_results.json")
+) -> tuple[tuple[_DbtGateEvent, ...], tuple[_DbtArtifactExtractionError, ...]]:
+    artifact_errors: list[_DbtArtifactExtractionError] = []
+    run_results, run_results_error = _dbt_artifact(
+        dbt_invocation,
+        "run_results.json",
+    )
+    if run_results_error is not None:
+        artifact_errors.append(run_results_error)
     if not isinstance(run_results, Mapping):
-        return ()
+        return (), tuple(artifact_errors)
 
-    manifest = _dbt_artifact(dbt_invocation, "manifest.json")
+    manifest, manifest_error = _dbt_artifact(dbt_invocation, "manifest.json")
+    if manifest_error is not None:
+        artifact_errors.append(manifest_error)
     results = run_results.get("results")
     if not isinstance(results, Sequence) or isinstance(
         results,
         (str, bytes, bytearray),
     ):
-        return ()
+        return (), tuple(artifact_errors)
 
     gate_events: list[_DbtGateEvent] = []
     for result in results:
@@ -347,18 +383,24 @@ def _failed_dbt_test_gate_events_from_artifacts(
             ),
         )
 
-    return tuple(gate_events)
+    return tuple(gate_events), tuple(artifact_errors)
 
 
-def _dbt_artifact(dbt_invocation: object, artifact_name: str) -> object | None:
+def _dbt_artifact(
+    dbt_invocation: object,
+    artifact_name: str,
+) -> tuple[object | None, _DbtArtifactExtractionError | None]:
     get_artifact = getattr(dbt_invocation, "get_artifact", None)
     if not callable(get_artifact):
-        return None
+        return None, None
 
     try:
-        return get_artifact(artifact_name)
-    except Exception:
-        return None
+        return get_artifact(artifact_name), None
+    except Exception as exc:
+        return None, _DbtArtifactExtractionError(
+            artifact_name=artifact_name,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
 
 def _is_dbt_test_unique_id(unique_id: str, manifest: object | None) -> bool:

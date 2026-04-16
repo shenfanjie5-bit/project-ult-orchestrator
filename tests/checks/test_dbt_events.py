@@ -58,10 +58,12 @@ class FakeDbtInvocation:
         events: tuple[object, ...],
         *,
         artifacts: dict[str, object] | None = None,
+        artifact_errors: dict[str, Exception] | None = None,
         error: Exception | None = None,
     ) -> None:
         self._events = events
         self._artifacts = artifacts or {}
+        self._artifact_errors = artifact_errors or {}
         self._error = error
 
     def stream(self) -> Any:
@@ -70,6 +72,8 @@ class FakeDbtInvocation:
             raise self._error
 
     def get_artifact(self, name: str) -> object | None:
+        if name in self._artifact_errors:
+            raise self._artifact_errors[name]
         return self._artifacts.get(name)
 
 
@@ -390,6 +394,41 @@ def test_stream_dbt_events_uses_failed_artifacts_before_reraising(
     assert _observation_metadata_value(observation, "action") == "partial_rerun"
     assert (tmp_path / "run-dbt-heartbeat.json").exists()
     assert _alert_payloads(caplog)[-1]["failed_node"] == "heartbeat"
+
+
+def test_stream_dbt_events_surfaces_artifact_extraction_errors(
+    gate_policy: Any,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    invocation = FakeDbtInvocation(
+        (),
+        artifact_errors={"run_results.json": RuntimeError("artifact store unavailable")},
+        error=RuntimeError("dbt build failed"),
+    )
+    events = stream_dbt_events_with_gate_handling(
+        context=_fake_context(run_id="run-dbt", cycle_id="cycle-dbt"),
+        dbt_invocation=invocation,
+        policy=gate_policy,
+        request_dir=tmp_path,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(RuntimeError, match="dbt build failed") as exc_info:
+            list(events)
+
+    warning_messages = [record.message for record in caplog.records]
+
+    assert any(
+        "run_id=run-dbt" in message
+        and "artifact=run_results.json" in message
+        and "artifact store unavailable" in message
+        for message in warning_messages
+    )
+    assert any(
+        "run_results.json: RuntimeError: artifact store unavailable" in note
+        for note in getattr(exc_info.value, "__notes__", ())
+    )
 
 
 def _with_phase0_task_partial_allowed(
