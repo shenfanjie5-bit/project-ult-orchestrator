@@ -108,6 +108,38 @@ def test_pending_manual_rerun_request_uses_stable_run_key(
     assert (tmp_path / "request.json").exists()
 
 
+def test_manual_rerun_sensor_emits_all_pending_valid_requests(
+    tmp_path: Path,
+    sensor_exports: dict[str, Any],
+) -> None:
+    evaluate_manual_rerun_requests = sensor_exports["evaluate_manual_rerun_requests"]
+    RunRequest = sensor_exports["RunRequest"]
+    _write_request(
+        tmp_path / "00-first.json",
+        run_id="r1",
+        failed_node="phase0_readiness_ping",
+        generated_at="2026-04-16T00:00:00+00:00",
+    )
+    _write_request(
+        tmp_path / "01-second.json",
+        run_id="r2",
+        failed_node="dbt.phase0.heartbeat",
+        generated_at="2026-04-16T00:01:00+00:00",
+    )
+
+    result = evaluate_manual_rerun_requests(tmp_path)
+
+    assert isinstance(result, list)
+    assert all(isinstance(item, RunRequest) for item in result)
+    assert [item.run_key for item in result] == [
+        "manual-rerun:r1:phase0_readiness_ping:2026-04-16T00:00:00+00:00",
+        "manual-rerun:r2:dbt.phase0.heartbeat:2026-04-16T00:01:00+00:00",
+    ]
+    assert [item.tags["rerun_of"] for item in result] == ["r1", "r2"]
+    assert (tmp_path / "00-first.json").exists()
+    assert (tmp_path / "01-second.json").exists()
+
+
 def test_manual_rerun_sensor_invalid_json_returns_skip_reason(
     tmp_path: Path,
     sensor_exports: dict[str, Any],
@@ -162,16 +194,23 @@ def test_manual_rerun_sensor_invalid_request_does_not_starve_valid_later_request
     assert (tmp_path / "01-valid.json").exists()
 
 
-def _write_request(path: Path, *, rerun_mode: str = "asset_only") -> None:
+def _write_request(
+    path: Path,
+    *,
+    run_id: str = "r1",
+    failed_node: str = "phase0_readiness_ping",
+    rerun_mode: str = "asset_only",
+    generated_at: str = "2026-04-16T00:00:00+00:00",
+) -> None:
     path.write_text(
         json.dumps(
             {
-                "run_id": "r1",
-                "failed_node": "phase0_readiness_ping",
-                "rerun_selection": ["phase0_readiness_ping"],
+                "run_id": run_id,
+                "failed_node": failed_node,
+                "rerun_selection": [failed_node],
                 "requires_manual_ack": False,
                 "rerun_mode": rerun_mode,
-                "generated_at": "2026-04-16T00:00:00+00:00",
+                "generated_at": generated_at,
             },
         ),
         encoding="utf-8",

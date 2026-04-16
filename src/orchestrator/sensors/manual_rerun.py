@@ -18,13 +18,13 @@ _ALLOWED_RERUN_MODES = frozenset({"repair_only", "asset_only", "phase_only"})
 
 
 @sensor(job=daily_cycle_job, name="manual_rerun_sensor")
-def manual_rerun_sensor() -> RunRequest | SkipReason:
+def manual_rerun_sensor() -> RunRequest | list[RunRequest] | SkipReason:
     request_dir = Path(os.environ.get(_REQUEST_DIR_ENV, DEFAULT_REQUEST_DIR))
     return evaluate_manual_rerun_requests(request_dir)
 
 
-def evaluate_manual_rerun_requests(request_dir: Path) -> RunRequest | SkipReason:
-    """Read one request JSON file and return a Dagster run request."""
+def evaluate_manual_rerun_requests(request_dir: Path) -> RunRequest | list[RunRequest] | SkipReason:
+    """Read pending request JSON files and return Dagster run requests."""
 
     if not request_dir.exists():
         return SkipReason(f"manual rerun request dir does not exist: {request_dir}")
@@ -36,6 +36,7 @@ def evaluate_manual_rerun_requests(request_dir: Path) -> RunRequest | SkipReason
         return SkipReason(f"no manual rerun requests found in {request_dir}")
 
     diagnostics: list[str] = []
+    run_requests: list[RunRequest] = []
     for request_path in request_files:
         payload, error = _load_request(request_path)
         if error is not None:
@@ -45,11 +46,16 @@ def evaluate_manual_rerun_requests(request_dir: Path) -> RunRequest | SkipReason
 
         assert payload is not None
         try:
-            return _build_run_request(payload)
+            run_requests.append(_build_run_request(payload))
         except Exception as exc:
             error = f"invalid manual rerun request {request_path.name}: {exc}"
             diagnostics.append(error)
             diagnostics.extend(_quarantine_invalid_request(request_dir, request_path, error))
+
+    if len(run_requests) == 1:
+        return run_requests[0]
+    if run_requests:
+        return run_requests
 
     return SkipReason("; ".join(diagnostics))
 
