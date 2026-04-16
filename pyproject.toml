@@ -24,6 +24,9 @@ dev = [
     "mypy",
 ]
 
+[project.scripts]
+orchestrator-rerun = "orchestrator.cli.rerun:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

@@ -19,7 +19,7 @@ from orchestrator.jobs.phase0 import (
 )
 from orchestrator.resources import AssetFactoryProvider, build_resource_bundle
 from orchestrator.schedules import daily_cycle_schedule
-from orchestrator.sensors import data_readiness_sensor
+from orchestrator.sensors import data_readiness_sensor, manual_rerun_sensor
 
 DEFAULT_POLICY_PATH = "config/policy/gate_policy.lite.yaml"
 _RESERVED_RESOURCE_KEYS = ("gate_policy", "dbt", "resource_bundle")
@@ -64,7 +64,7 @@ def build_definitions(
         ],
         jobs=[daily_cycle_job],
         schedules=[daily_cycle_schedule],
-        sensors=[data_readiness_sensor],
+        sensors=[data_readiness_sensor, manual_rerun_sensor],
         resources={
             "gate_policy": GatePolicyResource(policy_path=str(policy_path)),
             "dbt": DbtCliResource(

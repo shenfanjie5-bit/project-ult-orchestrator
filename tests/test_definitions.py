@@ -49,7 +49,11 @@ def test_build_definitions_collects_p1a_surface(
 
     assert len(defs.jobs) == 1
     assert len(defs.schedules) == 1
-    assert len(defs.sensors) == 1
+    assert len(defs.sensors) == 2
+    assert {sensor.name for sensor in defs.sensors} == {
+        "data_readiness_sensor",
+        "manual_rerun_sensor",
+    }
     assert AssetKey(["fake_phase0_asset"]) in _asset_keys(defs)
     assert "fake_phase0_check" in _check_names(defs)
     assert "gate_policy" in defs.resources
