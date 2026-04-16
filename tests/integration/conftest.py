@@ -144,6 +144,25 @@ def asset_materialization_keys(result: object) -> set[object]:
     return keys
 
 
+def materialization_order(result: object) -> list[object]:
+    keys: list[object] = []
+    for event in _result_events(result):
+        if not (
+            getattr(event, "is_step_materialization", False)
+            or getattr(event, "event_type_value", None) == "ASSET_MATERIALIZATION"
+        ):
+            continue
+
+        asset_key = getattr(event, "asset_key", None)
+        if asset_key is None:
+            event_specific_data = getattr(event, "event_specific_data", None)
+            materialization = getattr(event_specific_data, "materialization", None)
+            asset_key = getattr(materialization, "asset_key", None)
+        if asset_key is not None:
+            keys.append(asset_key)
+    return keys
+
+
 def asset_check_evaluations(result: object) -> list[object]:
     evaluations: list[object] = []
     for event in _result_events(result):
