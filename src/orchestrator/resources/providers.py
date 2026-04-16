@@ -7,15 +7,20 @@ from dagster import ResourceDefinition
 
 
 @runtime_checkable
-class AssetFactoryProvider(Protocol):
+class PureCheckProvider(Protocol):
+    """Provider interface for upstream pure Dagster AssetCheck wrappers."""
+
+    def get_checks(self) -> Sequence[object]:
+        """Return pure check wrappers with no orchestrator-side business IO."""
+        ...
+
+
+@runtime_checkable
+class AssetFactoryProvider(PureCheckProvider, Protocol):
     """Structural provider interface consumed by orchestrator assembly."""
 
     def get_assets(self) -> Sequence[object]:
         """Return Dagster assets exposed by the upstream module."""
-        ...
-
-    def get_checks(self) -> Sequence[object]:
-        """Return Dagster checks exposed by the upstream module."""
         ...
 
     def get_resources(self) -> Mapping[str, ResourceDefinition]:
