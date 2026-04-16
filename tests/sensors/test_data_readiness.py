@@ -199,6 +199,17 @@ def test_data_readiness_sensor_name(sensor_exports: dict[str, Any]) -> None:
     assert data_readiness_sensor.name == "data_readiness_sensor"
 
 
+def test_data_readiness_sensor_declares_required_resources(
+    sensor_exports: dict[str, Any],
+) -> None:
+    data_readiness_sensor = sensor_exports["data_readiness_sensor"]
+
+    assert data_readiness_sensor.required_resource_keys == {
+        "data_readiness",
+        "gate_policy",
+    }
+
+
 def test_schedule_and_sensor_can_be_collected_together(
     sensor_exports: dict[str, Any],
 ) -> None:
