@@ -24,11 +24,12 @@ def test_phase1_graph_provider_contributes_daily_cycle_selection(
         PHASE1_GROUP_NAME,
     )
 
+    phase0_provider = _fake_phase0_surface_provider(dagster)
     provider, graph_promotion, graph_snapshot, _graph_check = (
         _fake_graph_provider(dagster)
     )
     defs = build_definitions(
-        module_factories=[provider],
+        module_factories=[phase0_provider, provider],
         policy_path=stub_policy_path,
     )
 
@@ -40,6 +41,7 @@ def test_phase1_graph_provider_contributes_daily_cycle_selection(
         [
             phase0_readiness_ping,
             dbt_phase0_assets,
+            *phase0_provider.get_assets(),
             graph_promotion,
             graph_snapshot,
         ],
@@ -56,7 +58,12 @@ def test_phase1_graph_provider_contributes_daily_cycle_selection(
     assert "fake_graph_snapshot_check" in _check_names(defs)
 
     result = dagster.materialize(
-        [graph_promotion, graph_snapshot],
+        [
+            phase0_readiness_ping,
+            *phase0_provider.get_assets(),
+            graph_promotion,
+            graph_snapshot,
+        ],
         instance=dagster_instance,
     )
 
@@ -83,17 +90,53 @@ def test_milestone2_missing_phase1_contract_is_rejected(
         )
 
 
-def _fake_graph_provider(dagster: Any) -> tuple[object, object, object, object]:
+def test_phase1_graph_promotion_without_phase0_dependency_is_rejected(
+    dagster_module: object,
+    dagster_dbt_module: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
+
+    from orchestrator.definitions import build_definitions
+
+    provider, _graph_promotion, _graph_snapshot, _graph_check = _fake_graph_provider(
+        dagster,
+        include_phase0_dependency=False,
+    )
+
+    with pytest.raises(ValueError, match="phase1 graph_promotion.*Phase 0"):
+        build_definitions(
+            module_factories=[provider],
+            policy_path=stub_policy_path,
+        )
+
+
+def _fake_graph_provider(
+    dagster: Any,
+    *,
+    include_phase0_dependency: bool = True,
+) -> tuple[object, object, object, object]:
+    from orchestrator.jobs.phase0 import (
+        PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_READINESS_ASSET_KEY,
+    )
     from orchestrator.jobs.phase1 import (
         PHASE1_GRAPH_PROMOTION_ASSET_KEY,
         PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
         PHASE1_GROUP_NAME,
     )
+    promotion_asset_kwargs: dict[str, object] = {
+        "name": PHASE1_GRAPH_PROMOTION_ASSET_KEY,
+        "group_name": PHASE1_GROUP_NAME,
+    }
+    if include_phase0_dependency:
+        promotion_asset_kwargs["deps"] = [
+            dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+        ]
 
-    @dagster.asset(
-        name=PHASE1_GRAPH_PROMOTION_ASSET_KEY,
-        group_name=PHASE1_GROUP_NAME,
-    )
+    @dagster.asset(**promotion_asset_kwargs)
     def graph_promotion() -> str:
         return "promoted"
 

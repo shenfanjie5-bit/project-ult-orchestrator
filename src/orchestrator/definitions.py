@@ -23,6 +23,7 @@ from orchestrator.jobs.phase0 import (
     DBT_PROJECT_DIR,
     PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
     PHASE0_GROUP_NAME,
+    PHASE0_READINESS_ASSET_KEY,
     dbt_phase0_assets,
     phase0_readiness_ping,
 )
@@ -285,6 +286,12 @@ def _validate_phase1_provider_assets(provider_assets: Iterable[object]) -> None:
         AssetKey([PHASE1_GRAPH_PROMOTION_ASSET_KEY]),
         AssetKey([PHASE1_GRAPH_SNAPSHOT_ASSET_KEY]),
     )
+    required_phase0_dependency_keys = frozenset(
+        {
+            AssetKey([PHASE0_READINESS_ASSET_KEY]),
+            AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+        },
+    )
     required_asset_key_names = {
         asset_key: asset_key.path[-1] for asset_key in required_asset_keys
     }
@@ -302,12 +309,30 @@ def _validate_phase1_provider_assets(provider_assets: Iterable[object]) -> None:
                     f"{asset_key_name} asset must declare "
                     f"group_name={PHASE1_GROUP_NAME!r}; got {group_name!r}",
                 )
+            if asset_key == AssetKey([PHASE1_GRAPH_PROMOTION_ASSET_KEY]):
+                dependency_keys = _asset_dependency_keys(asset_def, asset_key)
+                missing_dependency_keys = required_phase0_dependency_keys.difference(
+                    dependency_keys,
+                )
+                if missing_dependency_keys:
+                    dependency_names = ", ".join(
+                        sorted(
+                            key.to_user_string()
+                            for key in missing_dependency_keys
+                        ),
+                    )
+                    raise ValueError(
+                        "phase1 graph_promotion asset must depend on a Phase 0 "
+                        "gate asset before it can be included in daily_cycle_job. "
+                        f"Missing: {dependency_names}.",
+                    )
 
 
 def _requires_milestone_surface() -> bool:
-    return _is_milestone_surface_profile() or _is_env_truthy(
-        _REQUIRE_MILESTONE_SURFACE_ENV,
-    )
+    forced = os.environ.get(_REQUIRE_MILESTONE_SURFACE_ENV)
+    if forced is not None:
+        return forced.strip().lower() in _TRUTHY_ENV_VALUES
+    return _is_milestone_surface_profile()
 
 
 def _requires_phase1_surface() -> bool:
@@ -389,6 +414,27 @@ def _validate_phase1_surface(provider_assets: Iterable[object]) -> None:
             "assets that satisfy the graph promotion/snapshot contract. "
             f"Missing: {missing_items}.",
         )
+
+
+def _asset_dependency_keys(
+    asset_def: object,
+    asset_key: AssetKey,
+) -> frozenset[AssetKey]:
+    dependency_keys: set[AssetKey] = set()
+    for attribute_name in (
+        "asset_deps",
+        "dependency_keys_by_key",
+        "deps_by_key",
+    ):
+        dependency_mapping = getattr(asset_def, attribute_name, None)
+        if isinstance(dependency_mapping, Mapping):
+            dependency_keys.update(dependency_mapping.get(asset_key, ()))
+
+    raw_dependency_keys = getattr(asset_def, "dependency_keys", ())
+    if raw_dependency_keys:
+        dependency_keys.update(raw_dependency_keys)
+
+    return frozenset(dependency_keys)
 
 
 def _data_readiness_resource(resources: Mapping[str, object]) -> object:
