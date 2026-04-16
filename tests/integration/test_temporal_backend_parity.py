@@ -83,7 +83,7 @@ def test_gate_matrix_failure_parity(
         parity_case.scenario_id for parity_case in _POLICY_CASES
     }
 
-    dagster_snapshot, temporal_snapshot, _provider = _execute_pair(
+    dagster_snapshot, temporal_snapshot, provider = _execute_pair(
         dagster_module,
         dagster_instance,
         stub_policy_path=stub_policy_path,
