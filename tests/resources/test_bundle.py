@@ -1,10 +1,16 @@
+import json
+import logging
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import datetime, timezone
 from inspect import signature
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LITE_POLICY_PATH = REPO_ROOT / "config" / "policy" / "gate_policy.lite.yaml"
 
 
 @pytest.fixture
@@ -147,3 +153,89 @@ def test_read_only_resource_bundle_rejects_metadata_shadowing_bypass(
         bundle.extra = "mutated"
     with pytest.raises(FrozenInstanceError):
         bundle.config_ref = "mutated"
+
+
+def test_build_resource_bundle_hard_stops_provider_resource_construction_failure(
+    resource_exports: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from orchestrator.resources import InfrastructureUnavailableError
+
+    build_resource_bundle = resource_exports["build_resource_bundle"]
+
+    class IcebergProvider:
+        infrastructure_resource_key = "iceberg_catalog"
+
+        def get_resources(self) -> dict[str, object]:
+            raise RuntimeError("fake iceberg catalog unavailable")
+
+    with caplog.at_level(logging.WARNING, logger="orchestrator.alerting.dispatcher"):
+        with pytest.raises(InfrastructureUnavailableError) as error:
+            build_resource_bundle(str(LITE_POLICY_PATH), [IcebergProvider()])
+
+    payload = _single_alert_for_resource(caplog.records, "iceberg_catalog")
+
+    assert error.value.event.resource_key == "iceberg_catalog"
+    assert error.value.decision.action.value == "fail_run"
+    assert payload["phase"] == "phase0"
+    assert payload["failure_class"] == "infra"
+    assert payload["action"] == "fail_run"
+    assert payload["failed_node"] == "iceberg_catalog"
+    assert "fake iceberg catalog unavailable" in payload["summary"]
+
+
+def test_build_resource_bundle_hard_stops_generic_get_resources_failure(
+    resource_exports: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from orchestrator.resources import (
+        InfrastructureUnavailableError,
+        PROVIDER_RESOURCE_CONSTRUCTION_KEY,
+    )
+
+    build_resource_bundle = resource_exports["build_resource_bundle"]
+
+    class BrokenProvider:
+        def get_resources(self) -> dict[str, object]:
+            raise RuntimeError("provider get_resources exploded")
+
+    with caplog.at_level(logging.WARNING, logger="orchestrator.alerting.dispatcher"):
+        with pytest.raises(InfrastructureUnavailableError) as error:
+            build_resource_bundle(str(LITE_POLICY_PATH), [BrokenProvider()])
+
+    payload = _single_alert_for_resource(
+        caplog.records,
+        PROVIDER_RESOURCE_CONSTRUCTION_KEY,
+    )
+
+    assert error.value.event.resource_key == PROVIDER_RESOURCE_CONSTRUCTION_KEY
+    assert payload["phase"] == "phase0"
+    assert payload["failure_class"] == "infra"
+    assert payload["action"] == "fail_run"
+    assert payload["failed_node"] == PROVIDER_RESOURCE_CONSTRUCTION_KEY
+    assert "provider get_resources exploded" in payload["summary"]
+
+
+def _single_alert_for_resource(
+    records: list[logging.LogRecord],
+    resource_key: str,
+) -> dict[str, object]:
+    payloads = [
+        payload
+        for payload in _alert_payloads(records)
+        if payload.get("failed_node") == resource_key
+    ]
+    assert len(payloads) == 1
+    return payloads[0]
+
+
+def _alert_payloads(records: list[logging.LogRecord]) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    for record in records:
+        try:
+            payload = json.loads(record.message)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads

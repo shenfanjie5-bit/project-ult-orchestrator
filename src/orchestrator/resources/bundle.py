@@ -8,6 +8,7 @@ from typing import Any
 
 from dagster import ResourceDefinition
 
+from orchestrator.resources.infra import guard_provider_resource_construction
 from orchestrator.resources.providers import AssetFactoryProvider
 
 
@@ -36,7 +37,7 @@ def build_resource_bundle(
     module_factories: Iterable[AssetFactoryProvider],
 ) -> ResourceBundle:
     module_factory_list = tuple(module_factories)
-    resources = _collect_resource_definitions(module_factory_list)
+    resources = _collect_resource_definitions(module_factory_list, env_config)
     return _resource_bundle_from(
         env_config=env_config,
         module_factories=module_factory_list,
@@ -46,11 +47,16 @@ def build_resource_bundle(
 
 def _collect_resource_definitions(
     module_factories: Iterable[AssetFactoryProvider],
+    env_config: Mapping[str, Any] | str | None,
 ) -> dict[str, ResourceDefinition]:
     resources: dict[str, ResourceDefinition] = {}
 
     for module_factory in module_factories:
-        for key, resource in module_factory.get_resources().items():
+        provider_resources = guard_provider_resource_construction(
+            module_factory,
+            env_config=env_config,
+        )
+        for key, resource in provider_resources.items():
             if key in resources:
                 raise ValueError(f"duplicate resource key: {key}")
             resources[key] = resource
