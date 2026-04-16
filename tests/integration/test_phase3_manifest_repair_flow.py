@@ -1,9 +1,161 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
+import pytest
+
 from tests.integration.conftest import asset_materialization_keys
+
+
+def test_daily_cycle_manifest_failure_hook_writes_repair_only_request(
+    dagster_module: object,
+    dagster_instance: object,
+    stub_policy_path: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    dagster = dagster_module
+
+    from orchestrator.checks.resources import GatePolicyResource
+    from orchestrator.jobs.cycle import daily_cycle_job
+    from orchestrator.jobs.phase0_constants import (
+        PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_GROUP_NAME,
+        PHASE0_READINESS_ASSET_KEY,
+    )
+    from orchestrator.jobs.phase1 import (
+        PHASE1_GRAPH_PROMOTION_ASSET_KEY,
+        PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+        PHASE1_GROUP_NAME,
+    )
+    from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME, PHASE2_STAGE_KEYS
+    from orchestrator.jobs.phase3 import (
+        PHASE3_FORMAL_COMMIT_ASSET_KEY,
+        PHASE3_GROUP_NAME,
+        PHASE3_MANIFEST_ASSET_KEY,
+    )
+    from orchestrator.sensors.manual_rerun import evaluate_manual_rerun_requests
+
+    request_dir = tmp_path / "rerun_requests"
+    repair_node = "repair_cycle_publish_manifest"
+    cycle_id = "cycle-20260416"
+    calls: list[str] = []
+    monkeypatch.setenv("ORCHESTRATOR_RERUN_REQUEST_DIR", str(request_dir))
+    monkeypatch.setenv("ORCHESTRATOR_MANIFEST_REPAIR_ASSET_KEY", repair_node)
+
+    @dagster.asset(name=PHASE0_READINESS_ASSET_KEY, group_name=PHASE0_GROUP_NAME)
+    def phase0_readiness_ping() -> str:
+        return "ready"
+
+    @dagster.asset(name=PHASE0_CANDIDATE_FREEZE_ASSET_KEY, group_name=PHASE0_GROUP_NAME)
+    def candidate_freeze() -> str:
+        return "frozen"
+
+    @dagster.asset(
+        name=PHASE1_GRAPH_PROMOTION_ASSET_KEY,
+        group_name=PHASE1_GROUP_NAME,
+        deps=[
+            dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+        ],
+    )
+    def graph_promotion() -> str:
+        return "promoted"
+
+    @dagster.asset(
+        name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+        group_name=PHASE1_GROUP_NAME,
+    )
+    def graph_snapshot(graph_promotion: str) -> str:
+        return f"{graph_promotion}:snapshot"
+
+    @dagster.asset(name=PHASE2_STAGE_KEYS[-1], group_name=PHASE2_GROUP_NAME)
+    def phase2_l7(graph_snapshot: str) -> str:
+        return f"{graph_snapshot}:l7"
+
+    @dagster.asset(
+        name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
+        group_name=PHASE3_GROUP_NAME,
+    )
+    def formal_objects_commit(l7: str) -> str:
+        assert l7
+        calls.append(PHASE3_FORMAL_COMMIT_ASSET_KEY)
+        return "formal-commit-ok"
+
+    @dagster.asset(
+        name=PHASE3_MANIFEST_ASSET_KEY,
+        group_name=PHASE3_GROUP_NAME,
+    )
+    def cycle_publish_manifest(formal_objects_commit: str) -> str:
+        assert formal_objects_commit == "formal-commit-ok"
+        calls.append(PHASE3_MANIFEST_ASSET_KEY)
+        raise RuntimeError("fake manifest write failed")
+
+    defs = dagster.Definitions(
+        assets=[
+            phase0_readiness_ping,
+            candidate_freeze,
+            graph_promotion,
+            graph_snapshot,
+            phase2_l7,
+            formal_objects_commit,
+            cycle_publish_manifest,
+        ],
+        jobs=[daily_cycle_job],
+        resources={
+            "gate_policy": GatePolicyResource(policy_path=stub_policy_path),
+        },
+    )
+    dagster.Definitions.validate_loadable(defs)
+
+    with caplog.at_level(logging.WARNING):
+        result = defs.get_job_def("daily_cycle_job").execute_in_process(
+            instance=dagster_instance,
+            raise_on_error=False,
+            tags={"cycle_id": cycle_id},
+        )
+
+    materialized_keys = asset_materialization_keys(result)
+    request_files = list(request_dir.glob("*.json"))
+    alert = _alert_payloads(caplog)[-1]
+
+    assert result.success is False
+    assert dagster.AssetKey([PHASE3_FORMAL_COMMIT_ASSET_KEY]) in materialized_keys
+    assert dagster.AssetKey([PHASE3_MANIFEST_ASSET_KEY]) not in materialized_keys
+    assert calls == [
+        PHASE3_FORMAL_COMMIT_ASSET_KEY,
+        PHASE3_MANIFEST_ASSET_KEY,
+    ]
+    assert len(request_files) == 1
+
+    request = json.loads(request_files[0].read_text(encoding="utf-8"))
+    assert request["run_id"] == result.run_id
+    assert request["failed_node"] == PHASE3_MANIFEST_ASSET_KEY
+    assert request["rerun_selection"] == [repair_node]
+    assert request["rerun_mode"] == "repair_only"
+    assert request["requires_manual_ack"] is True
+
+    assert alert["cycle_id"] == cycle_id
+    assert alert["phase"] == "phase3"
+    assert alert["failed_node"] == PHASE3_MANIFEST_ASSET_KEY
+    assert alert["action"] == "repair_manifest"
+    assert alert["failure_class"] == "infra"
+    assert str(request_files[0]) in str(alert["summary"])
+    assert "fake manifest write failed" in str(alert["summary"])
+
+    run_request = evaluate_manual_rerun_requests(request_dir)
+
+    assert isinstance(run_request, dagster.RunRequest)
+    assert run_request.job_name == "daily_cycle_job"
+    assert run_request.tags == {
+        "rerun_of": result.run_id,
+        "failed_node": PHASE3_MANIFEST_ASSET_KEY,
+        "rerun_mode": "repair_only",
+    }
+    assert _asset_selection_strings(run_request.asset_selection) == [repair_node]
 
 
 def test_phase3_manifest_failure_emits_repair_only_request_without_rollback(
@@ -160,3 +312,12 @@ def _asset_selection_strings(asset_selection: object) -> list[str]:
             continue
         output.append(str(asset_key))
     return output
+
+
+def _alert_payloads(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    for record in caplog.records:
+        if record.name != "orchestrator.alerting.dispatcher":
+            continue
+        payloads.append(json.loads(record.message))
+    return payloads
