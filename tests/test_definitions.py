@@ -1,5 +1,8 @@
+import importlib
+import sys
 from inspect import signature
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 
 import pytest
@@ -142,6 +145,76 @@ def test_build_definitions_signature_matches_contract(
         "module_factories",
         "policy_path",
     ]
+
+
+def test_module_level_defs_requires_milestone_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("dagster", reason="dagster is not installed")
+    pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
+    if not _DBT_MANIFEST_PATH.exists():
+        pytest.skip("dbt manifest is not compiled; run make dbt-compile")
+
+    monkeypatch.setenv("ORCHESTRATOR_DEFINITIONS_PROFILE", "milestone-1")
+    monkeypatch.delenv("ORCHESTRATOR_MODULE_FACTORIES", raising=False)
+    _clear_definition_imports()
+
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "milestone Definitions assembly requires upstream "
+                "data-platform and reasoner-runtime module factories"
+            ),
+        ):
+            importlib.import_module("orchestrator.definitions")
+    finally:
+        _clear_definition_imports()
+
+
+def test_module_level_defs_loads_configured_milestone_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dagster = pytest.importorskip("dagster", reason="dagster is not installed")
+    pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
+    if not _DBT_MANIFEST_PATH.exists():
+        pytest.skip("dbt manifest is not compiled; run make dbt-compile")
+
+    module_name = "fake_milestone_factories"
+    fake_module = ModuleType(module_name)
+
+    def build_data_platform_provider() -> object:
+        return _fake_provider(dagster)
+
+    def build_readiness_provider() -> object:
+        return _fake_readiness_provider(
+            dagster,
+            resource_key="data_readiness_provider",
+        )
+
+    fake_module.build_data_platform_provider = build_data_platform_provider
+    fake_module.build_readiness_provider = build_readiness_provider
+    monkeypatch.setitem(sys.modules, module_name, fake_module)
+    monkeypatch.setenv("ORCHESTRATOR_DEFINITIONS_PROFILE", "milestone-1")
+    monkeypatch.setenv(
+        "ORCHESTRATOR_MODULE_FACTORIES",
+        (
+            f"{module_name}:build_data_platform_provider,"
+            f"{module_name}:build_readiness_provider"
+        ),
+    )
+    _clear_definition_imports()
+
+    try:
+        definitions_module = importlib.import_module("orchestrator.definitions")
+        defs = definitions_module.defs
+
+        assert dagster.AssetKey(["candidate_freeze"]) in _asset_keys(defs)
+        assert "data_readiness" in defs.resources
+        assert "data_readiness_provider" in defs.resources
+        assert "llm_health_probe" in defs.resources
+    finally:
+        _clear_definition_imports()
 
 
 def test_build_definitions_is_loadable(
@@ -391,3 +464,7 @@ def _check_names(defs: Any) -> set[str]:
         if name := getattr(check_def, "name", None):
             names.add(name)
     return names
+
+
+def _clear_definition_imports() -> None:
+    sys.modules.pop("orchestrator.definitions", None)
