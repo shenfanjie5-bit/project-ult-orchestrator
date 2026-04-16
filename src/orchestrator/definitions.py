@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable, Mapping
+from importlib import import_module
 from pathlib import Path
+from typing import Any
 
 from dagster import AssetKey, ConfigurableResource, Definitions
 from dagster_dbt import DbtCliResource
@@ -36,6 +38,20 @@ from orchestrator.sensors.manual_rerun import manual_rerun_sensor
 DEFAULT_POLICY_PATH = "config/policy/gate_policy.lite.yaml"
 _RESERVED_RESOURCE_KEYS = ("gate_policy", "dbt", "resource_bundle")
 _LLM_HEALTH_PROBE_RESOURCE_KEY = "llm_health_probe"
+_MODULE_FACTORIES_ENV = "ORCHESTRATOR_MODULE_FACTORIES"
+_DEFINITIONS_PROFILE_ENV = "ORCHESTRATOR_DEFINITIONS_PROFILE"
+_PROFILE_ENV = "ORCHESTRATOR_PROFILE"
+_REQUIRE_MILESTONE_SURFACE_ENV = "ORCHESTRATOR_REQUIRE_MILESTONE_SURFACE"
+_MILESTONE_SURFACE_PROFILES = frozenset(
+    {
+        "milestone",
+        "milestone-1",
+        "p1b",
+        "p1c",
+        "phase0",
+    }
+)
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
 class _MissingLLMHealthResult:
@@ -76,7 +92,7 @@ class _FailClosedDataReadinessResource(ConfigurableResource):
 
 
 def build_definitions(
-    module_factories: Iterable[AssetFactoryProvider] = (),
+    module_factories: Iterable[AssetFactoryProvider] | None = None,
     policy_path: str | Path | None = None,
 ) -> Definitions:
     if policy_path is None:
@@ -84,7 +100,7 @@ def build_definitions(
             "ORCHESTRATOR_POLICY_PATH",
             DEFAULT_POLICY_PATH,
         )
-    module_factory_list = tuple(module_factories)
+    module_factory_list = _resolve_module_factories(module_factories)
 
     resource_bundle = build_resource_bundle(str(policy_path), module_factory_list)
     for reserved in _RESERVED_RESOURCE_KEYS:
@@ -97,6 +113,8 @@ def build_definitions(
         for asset in module_factory.get_assets()
     ]
     _validate_phase0_provider_assets(provider_assets)
+    if _requires_milestone_surface():
+        _validate_milestone_surface(provider_assets, resource_bundle.resources)
     provider_checks = [
         check
         for module_factory in module_factory_list
@@ -136,6 +154,70 @@ def build_definitions(
     )
 
 
+def _resolve_module_factories(
+    module_factories: Iterable[AssetFactoryProvider] | None,
+) -> tuple[AssetFactoryProvider, ...]:
+    if module_factories is not None:
+        return tuple(module_factories)
+
+    configured_factories = os.environ.get(_MODULE_FACTORIES_ENV, "")
+    if not configured_factories.strip():
+        return ()
+
+    return tuple(
+        _load_configured_module_factory(factory_path)
+        for factory_path in _split_factory_paths(configured_factories)
+    )
+
+
+def _split_factory_paths(configured_factories: str) -> tuple[str, ...]:
+    return tuple(
+        factory_path.strip()
+        for factory_path in configured_factories.replace("\n", ",").split(",")
+        if factory_path.strip()
+    )
+
+
+def _load_configured_module_factory(factory_path: str) -> AssetFactoryProvider:
+    module_name, separator, attribute_path = factory_path.partition(":")
+    if not separator or not module_name or not attribute_path:
+        raise RuntimeError(
+            f"{_MODULE_FACTORIES_ENV} entries must use 'module:attribute' import "
+            f"paths; got {factory_path!r}",
+        )
+
+    try:
+        module = import_module(module_name)
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to import module factory {factory_path!r} from "
+            f"{_MODULE_FACTORIES_ENV}",
+        ) from exc
+
+    try:
+        resolved: Any = module
+        for attribute_name in attribute_path.split("."):
+            resolved = getattr(resolved, attribute_name)
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"module factory {factory_path!r} could not be resolved from "
+            f"{_MODULE_FACTORIES_ENV}",
+        ) from exc
+
+    if isinstance(resolved, type) or (
+        callable(resolved) and not isinstance(resolved, AssetFactoryProvider)
+    ):
+        resolved = resolved()
+
+    if not isinstance(resolved, AssetFactoryProvider):
+        raise RuntimeError(
+            f"module factory {factory_path!r} must resolve to an "
+            "AssetFactoryProvider or a zero-argument factory returning one",
+        )
+
+    return resolved
+
+
 def _validate_phase0_provider_assets(provider_assets: Iterable[object]) -> None:
     candidate_freeze_key = AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY])
     has_phase0_provider_asset = False
@@ -163,6 +245,53 @@ def _validate_phase0_provider_assets(provider_assets: Iterable[object]) -> None:
     if has_phase0_provider_asset and not has_candidate_freeze:
         raise ValueError(
             "phase0 provider assets must include candidate_freeze",
+        )
+
+
+def _requires_milestone_surface() -> bool:
+    forced = os.environ.get(_REQUIRE_MILESTONE_SURFACE_ENV)
+    if forced is not None:
+        return forced.strip().lower() in _TRUTHY_ENV_VALUES
+
+    profile = os.environ.get(_DEFINITIONS_PROFILE_ENV) or os.environ.get(
+        _PROFILE_ENV,
+        "",
+    )
+    normalized_profile = profile.strip().lower().replace("_", "-")
+    return normalized_profile in _MILESTONE_SURFACE_PROFILES
+
+
+def _validate_milestone_surface(
+    provider_assets: Iterable[object],
+    provider_resources: Mapping[str, object],
+) -> None:
+    missing: list[str] = []
+    candidate_freeze_key = AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY])
+    asset_keys = {
+        asset_key
+        for asset_def in provider_assets
+        for asset_key in getattr(asset_def, "keys", ())
+    }
+    if candidate_freeze_key not in asset_keys:
+        missing.append("candidate_freeze asset")
+
+    if not (
+        DATA_READINESS_RESOURCE_KEY in provider_resources
+        or DATA_READINESS_PROVIDER_RESOURCE_KEY in provider_resources
+    ):
+        missing.append("data_readiness or data_readiness_provider resource")
+
+    if _LLM_HEALTH_PROBE_RESOURCE_KEY not in provider_resources:
+        missing.append("llm_health_probe resource")
+
+    if missing:
+        missing_items = ", ".join(missing)
+        raise RuntimeError(
+            "milestone Definitions assembly requires upstream data-platform and "
+            "reasoner-runtime module factories. Configure "
+            f"{_MODULE_FACTORIES_ENV} with 'module:attribute' import paths, or "
+            "pass module_factories explicitly to build_definitions(). "
+            f"Missing: {missing_items}.",
         )
 
 
