@@ -2,50 +2,63 @@ policy_version: lite-0.1
 contract_version: stub-0.1
 execution_backend: dagster_only
 phase_matrix:
-  - phase: phase0
+  - scenario_id: phase0_data_readiness_delayed
+    phase: phase0
     failure_class: data_quality
     action: fail_run
     allow_partial_rerun: false
     description: Upstream market data is delayed or unavailable; fail Phase 0 and alert.
-  - phase: phase0
+  - scenario_id: phase0_llm_health_check_failed
+    phase: phase0
     failure_class: infra
     action: fail_run
     allow_partial_rerun: false
     description: LLM health check failed; stop before Phase 1.
-  - phase: phase0
+  - scenario_id: phase0_dbt_test_failed
+    phase: phase0
     failure_class: task_level
     action: partial_rerun
     allow_partial_rerun: true
     description: dbt test failed; rerun the repaired asset group after the fix.
-  - phase: phase1
+    rerun_mode: asset_only
+  - scenario_id: phase1_graph_promotion_snapshot_failed
+    phase: phase1
     failure_class: publish
     action: fail_run
     allow_partial_rerun: false
     description: Graph promotion or snapshot failed; retain the previous ready graph.
-  - phase: phase2
+  - scenario_id: phase2_single_stock_task_failed
+    phase: phase2
     failure_class: task_level
     action: mark_inconclusive
     allow_partial_rerun: true
     description: A single-stock LLM task failed within tolerance; continue the pool.
-  - phase: phase2
+    rerun_mode: asset_only
+  - scenario_id: phase2_pool_failure_rate_exceeded
+    phase: phase2
     failure_class: data_quality
     action: fail_run
     allow_partial_rerun: false
     description: Pool failure rate exceeded threshold; fail the run and alert.
-  - phase: phase3
+  - scenario_id: phase3_formal_commit_failed
+    phase: phase3
     failure_class: publish
     action: fail_run
     allow_partial_rerun: false
     description: Formal table commit failed; fail Phase 3 before writing manifest.
-  - phase: phase3
+  - scenario_id: phase3_manifest_write_failed
+    phase: phase3
     failure_class: infra
     action: repair_manifest
     allow_partial_rerun: true
     description: Manifest write failed; alert and expose repair-only rerun.
-  - phase: phase2
+    rerun_mode: repair_only
+  - scenario_id: infra_unavailable_hard_stop
+    phase: phase2
     failure_class: infra
     action: fail_run
     allow_partial_rerun: false
+    applies_to_phases: [phase0, phase1, phase2, phase3]
     description: Core storage or graph infrastructure is unavailable; hard stop.
 thresholds:
   phase2_pool_failure_rate: 0.30
