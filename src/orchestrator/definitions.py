@@ -26,6 +26,11 @@ from orchestrator.jobs.phase0 import (
     dbt_phase0_assets,
     phase0_readiness_ping,
 )
+from orchestrator.jobs.phase1 import (
+    PHASE1_GRAPH_PROMOTION_ASSET_KEY,
+    PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+    PHASE1_GROUP_NAME,
+)
 from orchestrator.resources import AssetFactoryProvider, build_resource_bundle
 from orchestrator.schedules import daily_cycle_schedule
 from orchestrator.sensors.data_readiness import (
@@ -46,9 +51,33 @@ _MILESTONE_SURFACE_PROFILES = frozenset(
     {
         "milestone",
         "milestone-1",
+        "milestone-2",
+        "milestone-3",
+        "milestone-4",
         "p1b",
         "p1c",
+        "p2",
+        "p3",
+        "p5",
+        "p5+",
         "phase0",
+        "phase1",
+        "phase2",
+        "phase3",
+    }
+)
+_PHASE1_SURFACE_PROFILES = frozenset(
+    {
+        "milestone-2",
+        "milestone-3",
+        "milestone-4",
+        "p2",
+        "p3",
+        "p5",
+        "p5+",
+        "phase1",
+        "phase2",
+        "phase3",
     }
 )
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -113,8 +142,11 @@ def build_definitions(
         for asset in module_factory.get_assets()
     ]
     _validate_phase0_provider_assets(provider_assets)
+    _validate_phase1_provider_assets(provider_assets)
     if _requires_milestone_surface():
         _validate_milestone_surface(provider_assets, resource_bundle.resources)
+    if _requires_phase1_surface():
+        _validate_phase1_surface(provider_assets)
     provider_checks = [
         check
         for module_factory in module_factory_list
@@ -248,17 +280,54 @@ def _validate_phase0_provider_assets(provider_assets: Iterable[object]) -> None:
         )
 
 
-def _requires_milestone_surface() -> bool:
-    forced = os.environ.get(_REQUIRE_MILESTONE_SURFACE_ENV)
-    if forced is not None:
-        return forced.strip().lower() in _TRUTHY_ENV_VALUES
+def _validate_phase1_provider_assets(provider_assets: Iterable[object]) -> None:
+    required_asset_keys = (
+        AssetKey([PHASE1_GRAPH_PROMOTION_ASSET_KEY]),
+        AssetKey([PHASE1_GRAPH_SNAPSHOT_ASSET_KEY]),
+    )
+    required_asset_key_names = {
+        asset_key: asset_key.path[-1] for asset_key in required_asset_keys
+    }
 
+    for asset_def in provider_assets:
+        keys = tuple(getattr(asset_def, "keys", ()))
+        group_names = getattr(asset_def, "group_names_by_key", {})
+        for asset_key in required_asset_keys:
+            if asset_key not in keys:
+                continue
+            group_name = group_names.get(asset_key)
+            if group_name != PHASE1_GROUP_NAME:
+                asset_key_name = required_asset_key_names[asset_key]
+                raise ValueError(
+                    f"{asset_key_name} asset must declare "
+                    f"group_name={PHASE1_GROUP_NAME!r}; got {group_name!r}",
+                )
+
+
+def _requires_milestone_surface() -> bool:
+    return _is_milestone_surface_profile() or _is_env_truthy(
+        _REQUIRE_MILESTONE_SURFACE_ENV,
+    )
+
+
+def _requires_phase1_surface() -> bool:
+    return _normalized_definitions_profile() in _PHASE1_SURFACE_PROFILES
+
+
+def _is_milestone_surface_profile() -> bool:
+    return _normalized_definitions_profile() in _MILESTONE_SURFACE_PROFILES
+
+
+def _normalized_definitions_profile() -> str:
     profile = os.environ.get(_DEFINITIONS_PROFILE_ENV) or os.environ.get(
         _PROFILE_ENV,
         "",
     )
-    normalized_profile = profile.strip().lower().replace("_", "-")
-    return normalized_profile in _MILESTONE_SURFACE_PROFILES
+    return profile.strip().lower().replace("_", "-")
+
+
+def _is_env_truthy(env_key: str) -> bool:
+    return os.environ.get(env_key, "").strip().lower() in _TRUTHY_ENV_VALUES
 
 
 def _validate_milestone_surface(
@@ -291,6 +360,33 @@ def _validate_milestone_surface(
             "reasoner-runtime module factories. Configure "
             f"{_MODULE_FACTORIES_ENV} with 'module:attribute' import paths, or "
             "pass module_factories explicitly to build_definitions(). "
+            f"Missing: {missing_items}.",
+        )
+
+
+def _validate_phase1_surface(provider_assets: Iterable[object]) -> None:
+    required_asset_keys = {
+        AssetKey([PHASE1_GRAPH_PROMOTION_ASSET_KEY]): "graph_promotion asset",
+        AssetKey([PHASE1_GRAPH_SNAPSHOT_ASSET_KEY]): "graph_snapshot asset",
+    }
+    phase1_asset_keys = {
+        asset_key
+        for asset_def in provider_assets
+        for asset_key in getattr(asset_def, "keys", ())
+        if getattr(asset_def, "group_names_by_key", {}).get(asset_key)
+        == PHASE1_GROUP_NAME
+    }
+    missing = [
+        contract_name
+        for asset_key, contract_name in required_asset_keys.items()
+        if asset_key not in phase1_asset_keys
+    ]
+
+    if missing:
+        missing_items = ", ".join(missing)
+        raise ValueError(
+            "phase1 milestone Definitions assembly requires graph provider "
+            "assets that satisfy the graph promotion/snapshot contract. "
             f"Missing: {missing_items}.",
         )
 
