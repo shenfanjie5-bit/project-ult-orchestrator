@@ -30,6 +30,7 @@
 
 - `dbt_stub/` 只用于 P1a 骨架；接入 `data-platform` 后替换为其公开 dbt project 入口。
 - `phase0_readiness_ping` 是 API 占位 asset；接入真实 readiness API 时保持 orchestrator 只装配，不复制业务逻辑。
+- `candidate_freeze` 属于 Phase 0 asset group，但业务实现由 `data-platform` 的 `AssetFactoryProvider.get_assets()` 提供；orchestrator 只校验 asset key 与 `phase0` group 并纳入 `daily_cycle_job` 选择。
 - `phase0_ping_check` 只做 Gate policy wiring；真实检查函数应由上游 `PureCheckProvider` 暴露。
 - `GatePolicyResource` 当前读取 `config/policy/gate_policy.lite.yaml`；环境装配交给 `assembly` 后只替换 policy 路径。
 

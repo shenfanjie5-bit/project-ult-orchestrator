@@ -9,6 +9,13 @@ from typing import Iterator
 from dagster import AssetExecutionContext, asset
 from dagster_dbt import DbtCliResource, dbt_assets
 
+from orchestrator.jobs.phase0_constants import (
+    PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+    PHASE0_GROUP_NAME,
+    PHASE0_READINESS_ASSET_KEY,
+    PHASE0_REQUIRED_ASSET_KEYS,
+)
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DBT_PROJECT_DIR_ENV = os.environ.get("ORCHESTRATOR_DBT_PROJECT_DIR")
 DBT_PROJECT_DIR = (
@@ -18,7 +25,7 @@ DBT_PROFILES_DIR = DBT_PROJECT_DIR
 DBT_MANIFEST_PATH = DBT_PROJECT_DIR / "target" / "manifest.json"
 
 
-@asset(group_name="phase0")
+@asset(group_name=PHASE0_GROUP_NAME)
 def phase0_readiness_ping() -> str:
     return "ok"
 
@@ -38,3 +45,16 @@ def dbt_phase0_assets(
         ],
         context=context,
     ).stream()
+
+
+__all__ = [
+    "DBT_MANIFEST_PATH",
+    "DBT_PROFILES_DIR",
+    "DBT_PROJECT_DIR",
+    "PHASE0_CANDIDATE_FREEZE_ASSET_KEY",
+    "PHASE0_GROUP_NAME",
+    "PHASE0_READINESS_ASSET_KEY",
+    "PHASE0_REQUIRED_ASSET_KEYS",
+    "dbt_phase0_assets",
+    "phase0_readiness_ping",
+]
