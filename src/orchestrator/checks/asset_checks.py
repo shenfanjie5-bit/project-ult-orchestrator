@@ -96,6 +96,8 @@ def _read_llm_health(
     try:
         raw_result = check_health()
     except Exception as exc:
+        if _is_infrastructure_unavailable_error(exc):
+            raise
         return _unhealthy_probe_result(llm_health_probe, exc)
 
     try:
@@ -155,6 +157,12 @@ def _provider_from_probe_or_result(
         if isinstance(provider, str) and provider:
             return provider
     return None
+
+
+def _is_infrastructure_unavailable_error(exc: Exception) -> bool:
+    from orchestrator.resources.infra import InfrastructureUnavailableError
+
+    return isinstance(exc, InfrastructureUnavailableError)
 
 
 def _llm_health_metadata(

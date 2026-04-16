@@ -103,6 +103,20 @@ def test_classify_phase3_infra_repairs_manifest(gate_policy: Any) -> None:
     assert decision.action is GateAction.REPAIR_MANIFEST
 
 
+def test_classify_scenario_uses_applies_to_phase(gate_policy: Any) -> None:
+    decision = classify_gate_result(
+        PhaseEnum.PHASE1,
+        {
+            "failure_class": FailureClass.INFRA,
+            "scenario_id": "infra_unavailable_hard_stop",
+        },
+        gate_policy,
+    )
+
+    assert decision.phase is PhaseEnum.PHASE1
+    assert decision.action is GateAction.FAIL_RUN
+
+
 def test_unknown_policy_combination_raises(gate_policy: Any) -> None:
     with pytest.raises(
         UnknownGateFailure,
