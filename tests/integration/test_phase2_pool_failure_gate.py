@@ -64,7 +64,7 @@ def test_daily_cycle_phase2_pool_failure_rate_gate_fails_and_alerts(
             "action": "fail_run",
             "summary": "Phase 2 pool failure rate 0.4 (4/10): fake pool failures",
             "failure_class": "data_quality",
-            "runbook_url": None,
+            "runbook_url": "docs/RUNBOOK_P5.md#phase2-data_quality-fail_run",
         },
     ]
 
