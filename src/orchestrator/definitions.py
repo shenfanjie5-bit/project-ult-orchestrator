@@ -554,18 +554,38 @@ def _validate_phase3_provider_assets(
             f"manifest assets. Missing: {missing_items}.",
         )
 
-    if _has_required_dependency_ancestry(
+    if not _has_required_dependency_ancestry(
         manifest_key,
         phase3_asset_defs,
         frozenset({formal_commit_key}),
         frozenset(phase3_asset_defs),
         seen=frozenset(),
     ):
+        raise ValueError(
+            "phase3 cycle_publish_manifest asset must depend on "
+            "formal_objects_commit before it can be included in daily_cycle_job.",
+        )
+
+    phase2_boundary_key = _phase2_pool_gate_asset_key(provider_assets)
+    if phase2_boundary_key is None:
+        raise ValueError(
+            "phase3 formal_objects_commit asset requires a Phase 2 boundary "
+            "asset before it can be included in daily_cycle_job.",
+        )
+
+    if _has_required_dependency_ancestry(
+        formal_commit_key,
+        phase3_asset_defs,
+        frozenset({phase2_boundary_key}),
+        frozenset(phase3_asset_defs),
+        seen=frozenset(),
+    ):
         return
 
     raise ValueError(
-        "phase3 cycle_publish_manifest asset must depend on "
-        "formal_objects_commit before it can be included in daily_cycle_job.",
+        "phase3 formal_objects_commit asset must depend on the Phase 2 "
+        f"boundary asset {phase2_boundary_key.to_user_string()!r} before "
+        "cycle_publish_manifest can be included in daily_cycle_job.",
     )
 
 

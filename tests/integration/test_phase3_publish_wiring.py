@@ -131,6 +131,34 @@ def test_phase3_manifest_without_formal_commit_dependency_is_rejected(
         )
 
 
+def test_phase3_formal_commit_without_phase2_dependency_is_rejected(
+    dagster_module: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
+
+    from orchestrator.definitions import build_definitions
+
+    with pytest.raises(
+        ValueError,
+        match="formal_objects_commit.*Phase 2.*l7",
+    ):
+        build_definitions(
+            module_factories=[
+                _fake_phase0_surface_provider(dagster),
+                _fake_phase1_provider(dagster),
+                _fake_phase2_provider(dagster),
+                _fake_phase3_provider(
+                    dagster,
+                    phase3_calls=[],
+                    commit_depends_on_phase2=False,
+                ),
+            ],
+            policy_path=stub_policy_path,
+        )
+
+
 def test_phase3_provider_requires_publish_manifest_asset(
     dagster_module: object,
     stub_policy_path: str,
@@ -283,6 +311,7 @@ def _fake_phase3_provider(
     *,
     fail_commit: bool = False,
     include_manifest: bool = True,
+    commit_depends_on_phase2: bool = True,
     manifest_depends_on_commit: bool = True,
 ) -> object:
     from orchestrator.jobs.phase3 import (
@@ -291,16 +320,30 @@ def _fake_phase3_provider(
         PHASE3_MANIFEST_ASSET_KEY,
     )
 
-    @dagster.asset(
-        name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
-        group_name=PHASE3_GROUP_NAME,
-    )
-    def formal_objects_commit(l7: str) -> str:
-        assert l7
-        phase3_calls.append(PHASE3_FORMAL_COMMIT_ASSET_KEY)
-        if fail_commit:
-            raise RuntimeError("fake formal commit failed")
-        return "formal-commit-ok"
+    if commit_depends_on_phase2:
+
+        @dagster.asset(
+            name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
+            group_name=PHASE3_GROUP_NAME,
+        )
+        def formal_objects_commit(l7: str) -> str:
+            assert l7
+            phase3_calls.append(PHASE3_FORMAL_COMMIT_ASSET_KEY)
+            if fail_commit:
+                raise RuntimeError("fake formal commit failed")
+            return "formal-commit-ok"
+
+    else:
+
+        @dagster.asset(
+            name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
+            group_name=PHASE3_GROUP_NAME,
+        )
+        def formal_objects_commit() -> str:
+            phase3_calls.append(PHASE3_FORMAL_COMMIT_ASSET_KEY)
+            if fail_commit:
+                raise RuntimeError("fake formal commit failed")
+            return "formal-commit-ok"
 
     if include_manifest and manifest_depends_on_commit:
 
