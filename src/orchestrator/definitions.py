@@ -21,6 +21,7 @@ from orchestrator.checks.phase2 import (
     PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY,
     build_phase2_pool_failure_rate_check,
 )
+from orchestrator.jobs.audit import AUDIT_EVAL_GROUP_NAME
 from orchestrator.jobs.cycle import daily_cycle_job
 from orchestrator.jobs.phase0 import (
     DBT_PROFILES_DIR,
@@ -183,6 +184,7 @@ def build_definitions(
         provider_assets,
         require_surface=_requires_phase3_surface(),
     )
+    _validate_audit_eval_provider_assets(provider_assets)
     provider_checks = _collect_provider_checks(module_factory_list)
     phase2_builtin_checks = _build_phase2_builtin_checks(
         provider_assets,
@@ -587,6 +589,51 @@ def _validate_phase3_provider_assets(
         f"boundary asset {phase2_boundary_key.to_user_string()!r} before "
         "cycle_publish_manifest can be included in daily_cycle_job.",
     )
+
+
+def _validate_audit_eval_provider_assets(provider_assets: Iterable[object]) -> None:
+    manifest_key = AssetKey([PHASE3_MANIFEST_ASSET_KEY])
+    all_provider_asset_defs: dict[AssetKey, object] = {}
+    audit_asset_defs: dict[AssetKey, object] = {}
+
+    for asset_def in provider_assets:
+        keys = tuple(getattr(asset_def, "keys", ()))
+        group_names = getattr(asset_def, "group_names_by_key", {})
+        for asset_key in keys:
+            all_provider_asset_defs[asset_key] = asset_def
+            if group_names.get(asset_key) == AUDIT_EVAL_GROUP_NAME:
+                audit_asset_defs[asset_key] = asset_def
+
+    if not audit_asset_defs:
+        return
+
+    provider_asset_keys = frozenset(all_provider_asset_defs)
+    if manifest_key not in provider_asset_keys:
+        raise ValueError(
+            "audit_eval provider assets require the Phase 3 "
+            "cycle_publish_manifest asset before they can be included in "
+            "daily_cycle_job.",
+        )
+
+    for asset_key in sorted(
+        audit_asset_defs,
+        key=lambda key: key.to_user_string(),
+    ):
+        if _has_required_dependency_ancestry(
+            asset_key,
+            all_provider_asset_defs,
+            frozenset({manifest_key}),
+            provider_asset_keys,
+            seen=frozenset(),
+        ):
+            continue
+
+        raise ValueError(
+            "audit_eval asset "
+            f"{asset_key.to_user_string()!r} must depend on "
+            "cycle_publish_manifest before it can be included in "
+            "daily_cycle_job.",
+        )
 
 
 def _build_phase2_builtin_checks(

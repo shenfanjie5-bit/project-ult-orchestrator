@@ -1,5 +1,9 @@
 """Dagster job and asset group exports."""
 
+from orchestrator.jobs.audit import (
+    AUDIT_EVAL_GROUP_NAME,
+    RETROSPECTIVE_HOOK_ASSET_KEY,
+)
 from orchestrator.jobs.cycle import build_daily_cycle_jobs, daily_cycle_job
 from orchestrator.jobs.phase0 import (
     PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
@@ -22,6 +26,7 @@ from orchestrator.jobs.phase3 import (
 )
 
 __all__ = [
+    "AUDIT_EVAL_GROUP_NAME",
     "PHASE0_CANDIDATE_FREEZE_ASSET_KEY",
     "PHASE0_GROUP_NAME",
     "PHASE0_READINESS_ASSET_KEY",
@@ -34,6 +39,7 @@ __all__ = [
     "PHASE3_FORMAL_COMMIT_ASSET_KEY",
     "PHASE3_GROUP_NAME",
     "PHASE3_MANIFEST_ASSET_KEY",
+    "RETROSPECTIVE_HOOK_ASSET_KEY",
     "build_daily_cycle_jobs",
     "daily_cycle_job",
     "dbt_phase0_assets",
