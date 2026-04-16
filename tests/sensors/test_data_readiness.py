@@ -199,6 +199,21 @@ def test_data_readiness_sensor_name(sensor_exports: dict[str, Any]) -> None:
     assert data_readiness_sensor.name == "data_readiness_sensor"
 
 
+def test_build_data_readiness_sensor_targets_supplied_job(
+    sensor_exports: dict[str, Any],
+) -> None:
+    from orchestrator.jobs.cycle import daily_cycle_phase0_job
+    from orchestrator.sensors.data_readiness import build_data_readiness_sensor
+
+    sensor_definition = build_data_readiness_sensor(
+        daily_cycle_phase0_job,
+        name="phase0_data_readiness_sensor",
+    )
+
+    assert sensor_definition.name == "phase0_data_readiness_sensor"
+    assert _target_name(sensor_definition) == "daily_cycle_phase0_job"
+
+
 def test_data_readiness_sensor_declares_required_resources(
     sensor_exports: dict[str, Any],
 ) -> None:
@@ -233,3 +248,19 @@ class _RawReadinessResource:
 
     def get_data_readiness_signal(self) -> object:
         return self.signal
+
+
+def _target_name(definition: Any) -> str | None:
+    for attribute_name in ("job_name", "target_name"):
+        value = getattr(definition, attribute_name, None)
+        if isinstance(value, str):
+            return value
+
+    targets = getattr(definition, "targets", None)
+    if targets:
+        first_target = next(iter(targets))
+        for attribute_name in ("job_name", "target_name"):
+            value = getattr(first_target, attribute_name, None)
+            if isinstance(value, str):
+                return value
+    return None

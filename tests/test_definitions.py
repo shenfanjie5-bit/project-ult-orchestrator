@@ -82,6 +82,54 @@ def test_build_definitions_collects_p1a_surface(
     assert bundle.read_only is True
 
 
+def test_build_definitions_dagster_only_registers_full_cycle_entrypoints(
+    definitions_exports: dict[str, Any],
+) -> None:
+    build_definitions = definitions_exports["build_definitions"]
+
+    defs = build_definitions(policy_path="config/policy/gate_policy.lite.yaml")
+
+    assert _job_names(defs) == {"daily_cycle_job"}
+    assert _target_name(_schedule_by_name(defs, "daily_cycle_schedule")) == (
+        "daily_cycle_job"
+    )
+    assert _target_name(_sensor_by_name(defs, "data_readiness_sensor")) == (
+        "daily_cycle_job"
+    )
+    assert "temporal_handoff_sensor" not in {
+        sensor.name for sensor in defs.sensors or ()
+    }
+
+
+def test_build_definitions_temporal_backend_registers_phase0_entrypoint(
+    definitions_exports: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    build_definitions = definitions_exports["build_definitions"]
+    dagster = definitions_exports["dagster"]
+    policy_path = _policy_with_backend(tmp_path, "dagster_plus_temporal")
+
+    defs = build_definitions(
+        module_factories=[_fake_provider(dagster)],
+        policy_path=policy_path,
+    )
+
+    assert _job_names(defs) == {
+        "daily_cycle_phase0_job",
+        "daily_cycle_job",
+    }
+    assert _target_name(_schedule_by_name(defs, "daily_cycle_schedule")) == (
+        "daily_cycle_phase0_job"
+    )
+    assert _target_name(_sensor_by_name(defs, "data_readiness_sensor")) == (
+        "daily_cycle_phase0_job"
+    )
+    assert "temporal_handoff_sensor" in {
+        sensor.name for sensor in defs.sensors or ()
+    }
+    assert "temporal_handoff_client" not in defs.resources
+
+
 def test_build_definitions_backs_data_readiness_sensor_resources(
     definitions_exports: dict[str, Any],
 ) -> None:
@@ -461,6 +509,13 @@ def _sensor_by_name(defs: Any, name: str) -> Any:
     pytest.fail(f"missing sensor {name}")
 
 
+def _schedule_by_name(defs: Any, name: str) -> Any:
+    for schedule in defs.schedules or ():
+        if schedule.name == name:
+            return schedule
+    pytest.fail(f"missing schedule {name}")
+
+
 def _evaluate_sensor_tick(dagster: Any, sensor: Any, defs: Any) -> Any:
     context = dagster.build_sensor_context(definitions=defs)
     if callable(getattr(context, "__enter__", None)):
@@ -480,6 +535,48 @@ def _check_names(defs: Any) -> set[str]:
         if name := getattr(check_def, "name", None):
             names.add(name)
     return names
+
+
+def _job_names(defs: Any) -> set[str]:
+    return {job.name for job in defs.jobs or ()}
+
+
+def _target_name(definition: Any) -> str | None:
+    for attribute_name in ("job_name", "target_name"):
+        value = getattr(definition, attribute_name, None)
+        if isinstance(value, str):
+            return value
+
+    for attribute_name in ("job", "job_def", "_job", "_job_def"):
+        target = getattr(definition, attribute_name, None)
+        name = getattr(target, "name", None)
+        if isinstance(name, str):
+            return name
+
+    targets = getattr(definition, "targets", None)
+    if targets:
+        first_target = next(iter(targets))
+        for attribute_name in ("job_name", "target_name"):
+            value = getattr(first_target, attribute_name, None)
+            if isinstance(value, str):
+                return value
+    return None
+
+
+def _policy_with_backend(tmp_path: Path, backend: str) -> Path:
+    policy_path = tmp_path / f"gate_policy.{backend}.yaml"
+    source_path = (
+        _REPO_ROOT / "config" / "policy" / "gate_policy.lite.yaml"
+    )
+    policy_text = source_path.read_text(encoding="utf-8")
+    policy_path.write_text(
+        policy_text.replace(
+            "execution_backend: dagster_only",
+            f"execution_backend: {backend}",
+        ),
+        encoding="utf-8",
+    )
+    return policy_path
 
 
 def _clear_definition_imports() -> None:

@@ -47,14 +47,11 @@ class _DataReadinessGateEvent:
     reason: str | None = None
 
 
-@sensor(
-    job=daily_cycle_job,
-    name="data_readiness_sensor",
-    required_resource_keys=DATA_READINESS_SENSOR_REQUIRED_RESOURCE_KEYS,
-)
-def data_readiness_sensor(
+def evaluate_data_readiness_sensor(
     context: SensorEvaluationContext,
 ) -> RunRequest | SkipReason:
+    """Evaluate data readiness independent of the target Dagster job."""
+
     signal = _read_data_readiness_signal(context)
 
     if signal.ready:
@@ -87,6 +84,29 @@ def data_readiness_sensor(
     if signal.reason:
         return SkipReason(f"data readiness not ready: {signal.reason}")
     return SkipReason("data readiness not ready")
+
+
+def build_data_readiness_sensor(
+    job: object,
+    *,
+    name: str = "data_readiness_sensor",
+) -> object:
+    """Build a data readiness sensor targeting the selected cycle entrypoint."""
+
+    @sensor(
+        job=job,
+        name=name,
+        required_resource_keys=DATA_READINESS_SENSOR_REQUIRED_RESOURCE_KEYS,
+    )
+    def _data_readiness_sensor(
+        context: SensorEvaluationContext,
+    ) -> RunRequest | SkipReason:
+        return evaluate_data_readiness_sensor(context)
+
+    return _data_readiness_sensor
+
+
+data_readiness_sensor = build_data_readiness_sensor(daily_cycle_job)
 
 
 def _read_data_readiness_signal(
@@ -198,5 +218,7 @@ __all__ = [
     "DATA_READINESS_RESOURCE_KEY",
     "DATA_READINESS_SENSOR_REQUIRED_RESOURCE_KEYS",
     "GATE_POLICY_RESOURCE_KEY",
+    "build_data_readiness_sensor",
     "data_readiness_sensor",
+    "evaluate_data_readiness_sensor",
 ]
