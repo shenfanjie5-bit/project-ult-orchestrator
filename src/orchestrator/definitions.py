@@ -46,7 +46,12 @@ from orchestrator.jobs.phase3 import (
     PHASE3_GROUP_NAME,
     PHASE3_MANIFEST_ASSET_KEY,
 )
-from orchestrator.resources import AssetFactoryProvider, build_resource_bundle
+from orchestrator.resources import (
+    INFRASTRUCTURE_RESOURCE_PHASES,
+    AssetFactoryProvider,
+    build_resource_bundle,
+    guard_infrastructure_resource,
+)
 from orchestrator.schedules import daily_cycle_schedule
 from orchestrator.sensors.data_readiness import (
     DATA_READINESS_PROVIDER_RESOURCE_KEY,
@@ -219,6 +224,20 @@ def build_definitions(
         _FailClosedLLMHealthProbeResource(),
     )
     data_readiness_resource = _data_readiness_resource(resource_bundle.resources)
+    resources = _guard_infrastructure_resources(
+        {
+            "gate_policy": GatePolicyResource(policy_path=str(policy_path)),
+            "dbt": DbtCliResource(
+                project_dir=str(DBT_PROJECT_DIR),
+                profiles_dir=str(DBT_PROFILES_DIR),
+            ),
+            _LLM_HEALTH_PROBE_RESOURCE_KEY: llm_health_probe_resource,
+            DATA_READINESS_RESOURCE_KEY: data_readiness_resource,
+            "resource_bundle": resource_bundle,
+            **resource_bundle.resources,
+        },
+        policy_path=str(policy_path),
+    )
 
     return Definitions(
         assets=[
@@ -233,17 +252,7 @@ def build_definitions(
         jobs=[daily_cycle_job],
         schedules=[daily_cycle_schedule],
         sensors=[data_readiness_sensor, manual_rerun_sensor],
-        resources={
-            "gate_policy": GatePolicyResource(policy_path=str(policy_path)),
-            "dbt": DbtCliResource(
-                project_dir=str(DBT_PROJECT_DIR),
-                profiles_dir=str(DBT_PROFILES_DIR),
-            ),
-            _LLM_HEALTH_PROBE_RESOURCE_KEY: llm_health_probe_resource,
-            DATA_READINESS_RESOURCE_KEY: data_readiness_resource,
-            "resource_bundle": resource_bundle,
-            **resource_bundle.resources,
-        },
+        resources=resources,
     )
 
 
@@ -791,6 +800,24 @@ def _data_readiness_resource(resources: Mapping[str, object]) -> object:
             return resource
 
     return _FailClosedDataReadinessResource()
+
+
+def _guard_infrastructure_resources(
+    resources: Mapping[str, object],
+    policy_path: str,
+) -> dict[str, object]:
+    guarded_resources = dict(resources)
+    for resource_key, phase in INFRASTRUCTURE_RESOURCE_PHASES.items():
+        resource = guarded_resources.get(resource_key)
+        if resource is None:
+            continue
+        guarded_resources[resource_key] = guard_infrastructure_resource(
+            resource_key,
+            resource,
+            phase=phase,
+            policy_path=policy_path,
+        )
+    return guarded_resources
 
 
 defs = build_definitions()
