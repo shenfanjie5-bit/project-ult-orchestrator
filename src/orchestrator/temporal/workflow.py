@@ -13,6 +13,22 @@ from orchestrator.temporal.models import (
     TemporalWorkflowStatus,
 )
 
+_BACKEND_RUNTIME_MANIFEST_FIELDS = frozenset(
+    {
+        "temporal_run_id",
+        "temporal_workflow_id",
+    }
+)
+_CYCLE_MANIFEST_FIELDS = frozenset(
+    {
+        "contract_version",
+        "cycle_id",
+        "phase_statuses",
+        "policy_version",
+        "publish_status",
+    }
+)
+
 
 class TemporalPhaseExecutor(Protocol):
     """Protocol implemented by future Temporal handoff and parity executors."""
@@ -85,8 +101,7 @@ def _cycle_status_from_terminal_phase(
     decision = result.gate_decision
     if (
         result.status == "repair_required"
-        or decision is not None
-        and decision.action is GateAction.REPAIR_MANIFEST
+        or (decision is not None and decision.action is GateAction.REPAIR_MANIFEST)
     ):
         return "repair_required"
     return "failed"
@@ -105,15 +120,56 @@ def _cycle_manifest_fields(
     request: TemporalCycleRequest,
     phase_results: tuple[TemporalPhaseResult, ...],
 ) -> dict[str, object]:
-    return {
+    fields: dict[str, object] = {
         "cycle_id": request.cycle_id,
         "policy_version": request.policy_version,
         "contract_version": request.contract_version,
+        "publish_status": _publish_status(phase_results),
         "phase_statuses": tuple(
-            {"phase": result.phase.value, "status": result.status}
+            {"phase": result.phase.value, "status": _manifest_phase_status(result)}
             for result in phase_results
         ),
     }
+    for result in phase_results:
+        for key, value in result.manifest_fields.items():
+            if (
+                key not in _BACKEND_RUNTIME_MANIFEST_FIELDS
+                and key not in _CYCLE_MANIFEST_FIELDS
+            ):
+                fields[key] = value
+    return fields
+
+
+def _publish_status(
+    phase_results: tuple[TemporalPhaseResult, ...],
+) -> str:
+    phase3_result = next(
+        (result for result in phase_results if result.phase.value == "phase3"),
+        None,
+    )
+    if phase3_result is None:
+        return "not_published"
+    decision = phase3_result.gate_decision
+    if (
+        phase3_result.status == "repair_required"
+        or (decision is not None and decision.action is GateAction.REPAIR_MANIFEST)
+    ):
+        return "repair_required"
+    if phase3_result.status == "succeeded":
+        return "published"
+    return "not_published"
+
+
+def _manifest_phase_status(result: TemporalPhaseResult) -> str:
+    decision = result.gate_decision
+    if decision is not None and decision.action is GateAction.MARK_INCONCLUSIVE:
+        return "inconclusive"
+    if (
+        result.status == "repair_required"
+        or (decision is not None and decision.action is GateAction.REPAIR_MANIFEST)
+    ):
+        return "repair_required"
+    return result.status
 
 
 __all__ = [
