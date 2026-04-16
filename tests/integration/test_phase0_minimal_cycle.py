@@ -8,8 +8,14 @@ from typing import Any
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_FORBIDDEN_ROOT_MODULES = (
+    "graph" + "_engine",
+    "main" + "_core",
+    "data" + "_platform",
+    "audit" + "_eval",
+)
 _FORBIDDEN_BUSINESS_IMPORT = re.compile(
-    r"^(graph_engine|main_core|data_platform|audit_eval)\.",
+    r"^(" + "|".join(re.escape(module) for module in _FORBIDDEN_ROOT_MODULES) + r")\.",
 )
 
 

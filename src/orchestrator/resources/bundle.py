@@ -3,14 +3,18 @@
 from collections.abc import Iterable, Mapping
 from dataclasses import FrozenInstanceError, dataclass
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import Any
 
-from orchestrator.resources.providers import AssetFactoryProvider, ResourceDefinition
+from dagster import ResourceDefinition
+
+from orchestrator.resources.providers import AssetFactoryProvider
 
 
 @dataclass(slots=True)
 class ResourceBundle:
     resource_keys: tuple[str, ...]
+    resources: Mapping[str, ResourceDefinition]
     source_modules: tuple[str, ...]
     config_ref: str
     injected_at: datetime
@@ -36,7 +40,7 @@ def build_resource_bundle(
     return _resource_bundle_from(
         env_config=env_config,
         module_factories=module_factory_list,
-        resource_keys=tuple(resources),
+        resources=resources,
     )
 
 
@@ -57,10 +61,11 @@ def _collect_resource_definitions(
 def _resource_bundle_from(
     env_config: Mapping[str, Any] | str | None,
     module_factories: Iterable[AssetFactoryProvider],
-    resource_keys: tuple[str, ...],
+    resources: Mapping[str, ResourceDefinition],
 ) -> ResourceBundle:
     return ResourceBundle(
-        resource_keys=resource_keys,
+        resource_keys=tuple(resources),
+        resources=MappingProxyType(dict(resources)),
         source_modules=_source_modules(module_factories),
         config_ref=_config_ref(env_config),
         injected_at=datetime.now(timezone.utc),
