@@ -21,7 +21,10 @@ from orchestrator.checks.phase2 import (
     PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY,
     build_phase2_pool_failure_rate_check,
 )
-from orchestrator.jobs.audit import AUDIT_EVAL_GROUP_NAME
+from orchestrator.jobs.audit import (
+    AUDIT_EVAL_GROUP_NAME,
+    RETROSPECTIVE_HOOK_ASSET_KEY,
+)
 from orchestrator.jobs.cycle import daily_cycle_job
 from orchestrator.jobs.phase0 import (
     DBT_PROFILES_DIR,
@@ -107,12 +110,25 @@ _PHASE2_SURFACE_PROFILES = frozenset(
 )
 _PHASE3_SURFACE_PROFILES = frozenset(
     {
+        "milestone-2",
         "milestone-3",
         "milestone-4",
+        "p2",
         "p3",
         "p5",
         "p5+",
         "phase3",
+    }
+)
+_AUDIT_EVAL_SURFACE_PROFILES = frozenset(
+    {
+        "milestone-2",
+        "milestone-3",
+        "milestone-4",
+        "p2",
+        "p3",
+        "p5",
+        "p5+",
     }
 )
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -184,7 +200,10 @@ def build_definitions(
         provider_assets,
         require_surface=_requires_phase3_surface(),
     )
-    _validate_audit_eval_provider_assets(provider_assets)
+    _validate_audit_eval_provider_assets(
+        provider_assets,
+        require_surface=_requires_audit_eval_surface(),
+    )
     provider_checks = _collect_provider_checks(module_factory_list)
     phase2_builtin_checks = _build_phase2_builtin_checks(
         provider_assets,
@@ -424,6 +443,10 @@ def _requires_phase3_surface() -> bool:
     return _normalized_definitions_profile() in _PHASE3_SURFACE_PROFILES
 
 
+def _requires_audit_eval_surface() -> bool:
+    return _normalized_definitions_profile() in _AUDIT_EVAL_SURFACE_PROFILES
+
+
 def _is_milestone_surface_profile() -> bool:
     return _normalized_definitions_profile() in _MILESTONE_SURFACE_PROFILES
 
@@ -591,8 +614,13 @@ def _validate_phase3_provider_assets(
     )
 
 
-def _validate_audit_eval_provider_assets(provider_assets: Iterable[object]) -> None:
+def _validate_audit_eval_provider_assets(
+    provider_assets: Iterable[object],
+    *,
+    require_surface: bool = False,
+) -> None:
     manifest_key = AssetKey([PHASE3_MANIFEST_ASSET_KEY])
+    retrospective_hook_key = AssetKey([RETROSPECTIVE_HOOK_ASSET_KEY])
     all_provider_asset_defs: dict[AssetKey, object] = {}
     audit_asset_defs: dict[AssetKey, object] = {}
 
@@ -605,7 +633,18 @@ def _validate_audit_eval_provider_assets(provider_assets: Iterable[object]) -> N
                 audit_asset_defs[asset_key] = asset_def
 
     if not audit_asset_defs:
+        if require_surface:
+            raise ValueError(
+                "audit_eval milestone Definitions assembly requires the "
+                "retrospective_hook asset. Missing: retrospective_hook asset.",
+            )
         return
+
+    if retrospective_hook_key not in audit_asset_defs:
+        raise ValueError(
+            "audit_eval provider assets must include the retrospective_hook "
+            "asset before they can be included in daily_cycle_job.",
+        )
 
     provider_asset_keys = frozenset(all_provider_asset_defs)
     if manifest_key not in provider_asset_keys:
