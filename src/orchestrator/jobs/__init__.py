@@ -15,6 +15,11 @@ from orchestrator.jobs.phase1 import (
     PHASE1_GROUP_NAME,
 )
 from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME, PHASE2_STAGE_KEYS
+from orchestrator.jobs.phase3 import (
+    PHASE3_FORMAL_COMMIT_ASSET_KEY,
+    PHASE3_GROUP_NAME,
+    PHASE3_MANIFEST_ASSET_KEY,
+)
 
 __all__ = [
     "PHASE0_CANDIDATE_FREEZE_ASSET_KEY",
@@ -26,6 +31,9 @@ __all__ = [
     "PHASE1_GROUP_NAME",
     "PHASE2_GROUP_NAME",
     "PHASE2_STAGE_KEYS",
+    "PHASE3_FORMAL_COMMIT_ASSET_KEY",
+    "PHASE3_GROUP_NAME",
+    "PHASE3_MANIFEST_ASSET_KEY",
     "build_daily_cycle_jobs",
     "daily_cycle_job",
     "dbt_phase0_assets",

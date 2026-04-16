@@ -30,6 +30,10 @@ from orchestrator.checks.phase2 import (
     inconclusive_metadata,
     phase2_failure_rate,
 )
+from orchestrator.checks.phase3 import (
+    FormalCommitFailureEvent,
+    classify_formal_commit_failure,
+)
 from orchestrator.policy import FailureClass, GateAction, PhaseEnum
 
 
@@ -51,6 +55,7 @@ def __getattr__(name: str) -> object:
 
 __all__ = [
     "FailureClass",
+    "FormalCommitFailureEvent",
     "GateAction",
     "DataReadinessSignal",
     "GateDecision",
@@ -68,6 +73,7 @@ __all__ = [
     "build_phase2_pool_failure_rate_check",
     "classify_gate_result",
     "classify_dbt_test_failure",
+    "classify_formal_commit_failure",
     "classify_graph_promotion_failure",
     "classify_phase2_pool_failure_rate",
     "classify_phase2_single_stock_failure",

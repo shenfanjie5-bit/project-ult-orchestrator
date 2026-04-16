@@ -37,6 +37,11 @@ from orchestrator.jobs.phase1 import (
     PHASE1_GROUP_NAME,
 )
 from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME, PHASE2_STAGE_KEYS
+from orchestrator.jobs.phase3 import (
+    PHASE3_FORMAL_COMMIT_ASSET_KEY,
+    PHASE3_GROUP_NAME,
+    PHASE3_MANIFEST_ASSET_KEY,
+)
 from orchestrator.resources import AssetFactoryProvider, build_resource_bundle
 from orchestrator.schedules import daily_cycle_schedule
 from orchestrator.sensors.data_readiness import (
@@ -96,6 +101,16 @@ _PHASE2_SURFACE_PROFILES = frozenset(
         "p5",
         "p5+",
         "phase2",
+        "phase3",
+    }
+)
+_PHASE3_SURFACE_PROFILES = frozenset(
+    {
+        "milestone-3",
+        "milestone-4",
+        "p3",
+        "p5",
+        "p5+",
         "phase3",
     }
 )
@@ -164,6 +179,10 @@ def build_definitions(
         _validate_phase1_surface(provider_assets)
     if _requires_phase2_surface():
         _validate_phase2_surface(provider_assets)
+    _validate_phase3_provider_assets(
+        provider_assets,
+        require_surface=_requires_phase3_surface(),
+    )
     provider_checks = _collect_provider_checks(module_factory_list)
     phase2_builtin_checks = _build_phase2_builtin_checks(
         provider_assets,
@@ -399,6 +418,10 @@ def _requires_phase2_surface() -> bool:
     return _normalized_definitions_profile() in _PHASE2_SURFACE_PROFILES
 
 
+def _requires_phase3_surface() -> bool:
+    return _normalized_definitions_profile() in _PHASE3_SURFACE_PROFILES
+
+
 def _is_milestone_surface_profile() -> bool:
     return _normalized_definitions_profile() in _MILESTONE_SURFACE_PROFILES
 
@@ -484,6 +507,85 @@ def _validate_phase2_surface(provider_assets: Iterable[object]) -> None:
     raise ValueError(
         "phase2 milestone Definitions assembly requires provider assets "
         f"declaring group_name={PHASE2_GROUP_NAME!r}.",
+    )
+
+
+def _validate_phase3_provider_assets(
+    provider_assets: Iterable[object],
+    *,
+    require_surface: bool,
+) -> None:
+    formal_commit_key = AssetKey([PHASE3_FORMAL_COMMIT_ASSET_KEY])
+    manifest_key = AssetKey([PHASE3_MANIFEST_ASSET_KEY])
+    required_asset_key_names = {
+        formal_commit_key: PHASE3_FORMAL_COMMIT_ASSET_KEY,
+        manifest_key: PHASE3_MANIFEST_ASSET_KEY,
+    }
+    phase3_asset_defs: dict[AssetKey, object] = {}
+
+    for asset_def in provider_assets:
+        keys = tuple(getattr(asset_def, "keys", ()))
+        group_names = getattr(asset_def, "group_names_by_key", {})
+        for asset_key in keys:
+            if group_names.get(asset_key) == PHASE3_GROUP_NAME:
+                phase3_asset_defs[asset_key] = asset_def
+        for asset_key, asset_key_name in required_asset_key_names.items():
+            if asset_key not in keys:
+                continue
+            group_name = group_names.get(asset_key)
+            if group_name != PHASE3_GROUP_NAME:
+                raise ValueError(
+                    f"{asset_key_name} asset must declare "
+                    f"group_name={PHASE3_GROUP_NAME!r}; got {group_name!r}",
+                )
+
+    if not phase3_asset_defs and not require_surface:
+        return
+
+    missing = [
+        asset_key_name
+        for asset_key, asset_key_name in required_asset_key_names.items()
+        if asset_key not in phase3_asset_defs
+    ]
+    if missing:
+        missing_items = ", ".join(missing)
+        raise ValueError(
+            "phase3 provider assets must include formal commit and publish "
+            f"manifest assets. Missing: {missing_items}.",
+        )
+
+    if not _has_required_dependency_ancestry(
+        manifest_key,
+        phase3_asset_defs,
+        frozenset({formal_commit_key}),
+        frozenset(phase3_asset_defs),
+        seen=frozenset(),
+    ):
+        raise ValueError(
+            "phase3 cycle_publish_manifest asset must depend on "
+            "formal_objects_commit before it can be included in daily_cycle_job.",
+        )
+
+    phase2_boundary_key = _phase2_pool_gate_asset_key(provider_assets)
+    if phase2_boundary_key is None:
+        raise ValueError(
+            "phase3 formal_objects_commit asset requires a Phase 2 boundary "
+            "asset before it can be included in daily_cycle_job.",
+        )
+
+    if _has_required_dependency_ancestry(
+        formal_commit_key,
+        phase3_asset_defs,
+        frozenset({phase2_boundary_key}),
+        frozenset(phase3_asset_defs),
+        seen=frozenset(),
+    ):
+        return
+
+    raise ValueError(
+        "phase3 formal_objects_commit asset must depend on the Phase 2 "
+        f"boundary asset {phase2_boundary_key.to_user_string()!r} before "
+        "cycle_publish_manifest can be included in daily_cycle_job.",
     )
 
 
