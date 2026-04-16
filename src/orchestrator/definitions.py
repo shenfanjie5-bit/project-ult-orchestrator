@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from dagster import AssetKey, ConfigurableResource, Definitions
 from dagster_dbt import DbtCliResource
 
 from orchestrator.checks import (
+    DataReadinessSignal,
     GatePolicyResource,
     llm_health_check,
     phase0_ping_check,
@@ -25,7 +26,12 @@ from orchestrator.jobs.phase0 import (
 )
 from orchestrator.resources import AssetFactoryProvider, build_resource_bundle
 from orchestrator.schedules import daily_cycle_schedule
-from orchestrator.sensors import data_readiness_sensor, manual_rerun_sensor
+from orchestrator.sensors.data_readiness import (
+    DATA_READINESS_PROVIDER_RESOURCE_KEY,
+    DATA_READINESS_RESOURCE_KEY,
+    data_readiness_sensor,
+)
+from orchestrator.sensors.manual_rerun import manual_rerun_sensor
 
 DEFAULT_POLICY_PATH = "config/policy/gate_policy.lite.yaml"
 _RESERVED_RESOURCE_KEYS = ("gate_policy", "dbt", "resource_bundle")
@@ -50,6 +56,23 @@ class _FailClosedLLMHealthProbeResource(ConfigurableResource):
 
     def create_resource(self, context: object) -> _MissingLLMHealthProbe:
         return _MissingLLMHealthProbe()
+
+
+class _MissingDataReadinessProvider:
+    def get_data_readiness_signal(self) -> DataReadinessSignal:
+        return DataReadinessSignal(
+            ready=False,
+            cycle_id="missing-data-readiness",
+            reason="data_readiness resource is not configured",
+            failed_node=DATA_READINESS_RESOURCE_KEY,
+        )
+
+
+class _FailClosedDataReadinessResource(ConfigurableResource):
+    """Default provider that lets the readiness gate fail through policy."""
+
+    def create_resource(self, context: object) -> _MissingDataReadinessProvider:
+        return _MissingDataReadinessProvider()
 
 
 def build_definitions(
@@ -84,6 +107,7 @@ def build_definitions(
         _LLM_HEALTH_PROBE_RESOURCE_KEY,
         _FailClosedLLMHealthProbeResource(),
     )
+    data_readiness_resource = _data_readiness_resource(resource_bundle.resources)
 
     return Definitions(
         assets=[
@@ -105,6 +129,7 @@ def build_definitions(
                 profiles_dir=str(DBT_PROFILES_DIR),
             ),
             _LLM_HEALTH_PROBE_RESOURCE_KEY: llm_health_probe_resource,
+            DATA_READINESS_RESOURCE_KEY: data_readiness_resource,
             "resource_bundle": resource_bundle,
             **resource_bundle.resources,
         },
@@ -139,6 +164,18 @@ def _validate_phase0_provider_assets(provider_assets: Iterable[object]) -> None:
         raise ValueError(
             "phase0 provider assets must include candidate_freeze",
         )
+
+
+def _data_readiness_resource(resources: Mapping[str, object]) -> object:
+    for resource_key in (
+        DATA_READINESS_RESOURCE_KEY,
+        DATA_READINESS_PROVIDER_RESOURCE_KEY,
+    ):
+        resource = resources.get(resource_key)
+        if resource is not None:
+            return resource
+
+    return _FailClosedDataReadinessResource()
 
 
 defs = build_definitions()
