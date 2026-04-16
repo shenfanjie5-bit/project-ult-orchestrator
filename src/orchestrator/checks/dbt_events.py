@@ -64,12 +64,7 @@ def _validated_failed_node_from_event(
     event_asset_key: str | None,
 ) -> str:
     if event_asset_key is None:
-        if _is_validated_dbt_asset_or_group_key(requested_failed_node):
-            return requested_failed_node
-        msg = (
-            "dbt failure event asset_key metadata is required unless "
-            "failed_asset_key is a validated dbt asset/group key"
-        )
+        msg = "dbt failure event asset_key metadata is required"
         raise ValueError(msg)
 
     if event_asset_key != requested_failed_node:
@@ -80,10 +75,6 @@ def _validated_failed_node_from_event(
         raise ValueError(msg)
 
     return event_asset_key
-
-
-def _is_validated_dbt_asset_or_group_key(failed_node: str) -> bool:
-    return failed_node.startswith("dbt_") or failed_node.startswith("dbt/")
 
 
 def _dbt_test_failure_gate_event(event: object) -> _DbtGateEvent:

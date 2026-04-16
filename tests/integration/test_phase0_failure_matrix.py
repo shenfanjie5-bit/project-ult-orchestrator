@@ -142,10 +142,12 @@ def test_llm_health_failure_emits_failed_check_and_blocks_downstream_phase(
 def test_dbt_test_failure_matrix_plans_only_failed_dbt_asset_group(
     dagster_module: object,
     stub_policy_path: str,
+    tmp_dbt_project: Path,
 ) -> None:
-    dagster = dagster_module
+    from orchestrator.jobs.phase0 import dbt_phase0_assets
+
     policy = load_gate_policy(stub_policy_path)
-    failed_asset_key = dagster.AssetKey(["dbt_phase0_assets"])
+    failed_asset_key = _heartbeat_asset_key(dbt_phase0_assets)
     event = {
         "asset_key": failed_asset_key,
         "metadata": {
@@ -166,9 +168,10 @@ def test_dbt_test_failure_matrix_plans_only_failed_dbt_asset_group(
     assert decision.phase is PhaseEnum.PHASE0
     assert decision.failure_class is FailureClass.TASK_LEVEL
     assert decision.action is GateAction.PARTIAL_RERUN
-    assert plan.rerun_selection == ("dbt_phase0_assets",)
+    assert plan.rerun_selection == (failed_asset_key.to_user_string(),)
     assert plan.requires_manual_ack is False
     assert plan.rerun_mode == "asset_only"
+    assert "dbt_phase0_assets" not in plan.rerun_selection
     assert "phase0_readiness_ping" not in plan.rerun_selection
     assert "candidate_freeze" not in plan.rerun_selection
 
@@ -245,3 +248,11 @@ def _asset_selection_strings(asset_selection: object) -> list[str]:
             continue
         output.append(str(asset_key))
     return output
+
+
+def _heartbeat_asset_key(dbt_phase0_assets: object) -> object:
+    for asset_key in getattr(dbt_phase0_assets, "keys", ()):
+        path = tuple(getattr(asset_key, "path", ()))
+        if path and path[-1] == "heartbeat":
+            return asset_key
+    pytest.fail("dbt heartbeat model asset key was not registered")

@@ -112,11 +112,10 @@ def require_integration_module(module_name: str, package_name: str) -> ModuleTyp
     try:
         return import_module(module_name)
     except ModuleNotFoundError as exc:
-        pytest.fail(
+        pytest.skip(
             f"{package_name} is required for tests/integration; "
             "install the project dev dependencies before running this target. "
             f"Original import error: {exc}",
-            pytrace=False,
         )
 
 

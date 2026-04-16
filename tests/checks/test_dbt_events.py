@@ -127,17 +127,16 @@ def test_dbt_test_failure_with_missing_metadata_still_maps_to_task_level(
     assert decision.action is GateAction.PARTIAL_RERUN
 
 
-def test_plan_dbt_test_partial_rerun_allows_validated_dbt_group_fallback(
+def test_plan_dbt_test_partial_rerun_rejects_dbt_group_without_event_asset_key(
     gate_policy: Any,
 ) -> None:
-    plan = plan_dbt_test_partial_rerun(
-        "run-missing-metadata",
-        "dbt_phase0_assets",
-        MissingMetadataEvent(),
-        gate_policy,
-    )
-
-    assert plan.rerun_selection == ("dbt_phase0_assets",)
+    with pytest.raises(ValueError, match="asset_key metadata is required"):
+        plan_dbt_test_partial_rerun(
+            "run-missing-metadata",
+            "dbt_phase0_assets",
+            MissingMetadataEvent(),
+            gate_policy,
+        )
 
 
 def test_plan_dbt_test_partial_rerun_rejects_unvalidated_missing_asset_metadata(
