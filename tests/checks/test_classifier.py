@@ -120,6 +120,24 @@ def test_classify_rejects_non_event_failure_class(gate_policy: Any) -> None:
         classify_gate_result(PhaseEnum.PHASE0, FailureClass.INFRA, gate_policy)
 
 
+def test_classify_rejects_mapping_event_with_null_failure_class(
+    gate_policy: Any,
+) -> None:
+    with pytest.raises(ValueError, match="failure_class is required"):
+        classify_gate_result(PhaseEnum.PHASE0, {"failure_class": None}, gate_policy)
+
+
+def test_classify_rejects_object_event_with_null_failure_class(
+    gate_policy: Any,
+) -> None:
+    with pytest.raises(ValueError, match="failure_class is required"):
+        classify_gate_result(
+            PhaseEnum.PHASE0,
+            GateEvent(failure_class=None),
+            gate_policy,
+        )
+
+
 def test_duplicate_phase_matrix_entries_are_rejected(tmp_path: Path) -> None:
     policy_data = _load_lite_policy_data()
     policy_data["phase_matrix"].append(dict(policy_data["phase_matrix"][0]))

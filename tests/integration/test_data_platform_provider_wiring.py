@@ -7,12 +7,13 @@ import pytest
 
 
 def test_data_platform_provider_contributes_phase0_surface(
+    dagster_module: object,
+    dagster_dbt_module: object,
     dagster_instance: object,
     stub_policy_path: str,
     tmp_dbt_project: Path,
 ) -> None:
-    dagster = pytest.importorskip("dagster", reason="dagster is not installed")
-    pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
+    dagster = dagster_module
 
     from orchestrator.definitions import build_definitions
     from orchestrator.jobs.cycle import daily_cycle_job
@@ -72,11 +73,12 @@ def test_data_platform_provider_contributes_phase0_surface(
 
 
 def test_candidate_freeze_group_mismatch_is_rejected(
+    dagster_module: object,
+    dagster_dbt_module: object,
     stub_policy_path: str,
     tmp_dbt_project: Path,
 ) -> None:
-    dagster = pytest.importorskip("dagster", reason="dagster is not installed")
-    pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
+    dagster = dagster_module
 
     from orchestrator.definitions import build_definitions
 

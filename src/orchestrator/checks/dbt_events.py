@@ -35,14 +35,18 @@ def classify_dbt_test_failure(
 
 def plan_dbt_test_partial_rerun(
     run_id: str,
-    failed_asset_key: str,
+    failed_asset_key: object,
     event: object,
     policy: GatePolicyProfile,
 ) -> PartialRerunPlan:
     """Plan the minimal rerun selection for a failed Phase 0 dbt asset."""
 
-    _dbt_test_failure_gate_event(event)
-    failed_node = _stable_asset_key_string(failed_asset_key)
+    gate_event = _dbt_test_failure_gate_event(event)
+    requested_failed_node = _stable_asset_key_string(failed_asset_key)
+    failed_node = _validated_failed_node_from_event(
+        requested_failed_node,
+        gate_event.asset_key,
+    )
     run_history = RunHistorySnapshot(
         run_id=run_id,
         node_to_phase={failed_node: PhaseEnum.PHASE0},
@@ -53,6 +57,24 @@ def plan_dbt_test_partial_rerun(
     )
 
     return compute_partial_rerun_plan(run_id, failed_node, run_history, policy)
+
+
+def _validated_failed_node_from_event(
+    requested_failed_node: str,
+    event_asset_key: str | None,
+) -> str:
+    if event_asset_key is None:
+        msg = "dbt failure event asset_key metadata is required"
+        raise ValueError(msg)
+
+    if event_asset_key != requested_failed_node:
+        msg = (
+            "dbt failure event asset_key does not match failed_asset_key: "
+            f"event={event_asset_key} requested={requested_failed_node}"
+        )
+        raise ValueError(msg)
+
+    return event_asset_key
 
 
 def _dbt_test_failure_gate_event(event: object) -> _DbtGateEvent:

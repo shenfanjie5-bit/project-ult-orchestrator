@@ -30,6 +30,9 @@ def dispatch_gate_decision_alert(
             failed_node=failed_node,
             action=decision.action.value,
             summary=summary,
+            failure_class=(
+                decision.failure_class.value if decision.failure_class else None
+            ),
         ),
         channels=channels,
     )

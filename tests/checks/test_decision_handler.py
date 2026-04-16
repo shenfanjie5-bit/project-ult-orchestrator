@@ -35,6 +35,7 @@ def test_dispatch_gate_decision_alert_logs_fail_run_payload(
         "failed_node": "data_readiness",
         "action": "fail_run",
         "summary": "not ready",
+        "failure_class": "data_quality",
         "runbook_url": None,
     }
 
@@ -63,6 +64,7 @@ def test_dispatch_gate_decision_alert_logs_repair_manifest_payload(
     assert payload["phase"] == "phase3"
     assert payload["status"] == "failed"
     assert payload["action"] == "repair_manifest"
+    assert payload["failure_class"] == "infra"
     assert payload["failed_node"] == "phase3_manifest"
 
 

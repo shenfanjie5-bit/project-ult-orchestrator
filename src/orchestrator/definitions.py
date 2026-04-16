@@ -6,7 +6,7 @@ import os
 from collections.abc import Iterable
 from pathlib import Path
 
-from dagster import AssetKey, Definitions
+from dagster import AssetKey, ConfigurableResource, Definitions
 from dagster_dbt import DbtCliResource
 
 from orchestrator.checks import (
@@ -29,6 +29,27 @@ from orchestrator.sensors import data_readiness_sensor, manual_rerun_sensor
 
 DEFAULT_POLICY_PATH = "config/policy/gate_policy.lite.yaml"
 _RESERVED_RESOURCE_KEYS = ("gate_policy", "dbt", "resource_bundle")
+_LLM_HEALTH_PROBE_RESOURCE_KEY = "llm_health_probe"
+
+
+class _MissingLLMHealthResult:
+    healthy = False
+    summary = "llm_health_probe resource is not configured"
+    provider = "missing"
+
+
+class _MissingLLMHealthProbe:
+    provider = "missing"
+
+    def check_health(self) -> _MissingLLMHealthResult:
+        return _MissingLLMHealthResult()
+
+
+class _FailClosedLLMHealthProbeResource(ConfigurableResource):
+    """Default probe that keeps the LLM hard-stop gate fail-closed."""
+
+    def create_resource(self, context: object) -> _MissingLLMHealthProbe:
+        return _MissingLLMHealthProbe()
 
 
 def build_definitions(
@@ -58,6 +79,11 @@ def build_definitions(
         for module_factory in module_factory_list
         for check in module_factory.get_checks()
     ]
+    builtin_checks = [phase0_ping_check, llm_health_check]
+    llm_health_probe_resource = resource_bundle.resources.get(
+        _LLM_HEALTH_PROBE_RESOURCE_KEY,
+        _FailClosedLLMHealthProbeResource(),
+    )
 
     return Definitions(
         assets=[
@@ -66,8 +92,7 @@ def build_definitions(
             *provider_assets,
         ],
         asset_checks=[
-            phase0_ping_check,
-            llm_health_check,
+            *builtin_checks,
             *provider_checks,
         ],
         jobs=[daily_cycle_job],
@@ -79,6 +104,7 @@ def build_definitions(
                 project_dir=str(DBT_PROJECT_DIR),
                 profiles_dir=str(DBT_PROFILES_DIR),
             ),
+            _LLM_HEALTH_PROBE_RESOURCE_KEY: llm_health_probe_resource,
             "resource_bundle": resource_bundle,
             **resource_bundle.resources,
         },

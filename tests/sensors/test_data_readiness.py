@@ -135,7 +135,62 @@ def test_data_readiness_sensor_not_ready_dispatches_policy_alert(
     assert payload["status"] == "failed"
     assert payload["failed_node"] == "data_readiness"
     assert payload["action"] == "fail_run"
+    assert payload["failure_class"] == "data_quality"
     assert payload["summary"] == first_policy_row.description
+
+
+@pytest.mark.parametrize(
+    ("signal", "message"),
+    [
+        (
+            DataReadinessSignal(
+                ready="false",  # type: ignore[arg-type]
+                cycle_id="cycle-20260416",
+            ),
+            "ready must be bool",
+        ),
+        (
+            {"ready": True, "cycle_id": ""},
+            "cycle_id must be a non-empty string",
+        ),
+        (
+            {"ready": True},
+            "cycle_id must be a non-empty string",
+        ),
+        (
+            {
+                "ready": True,
+                "cycle_id": "cycle-20260416",
+                "failed_node": "",
+            },
+            "failed_node must be a non-empty string",
+        ),
+        (
+            {
+                "ready": True,
+                "cycle_id": "cycle-20260416",
+                "reason": 404,
+            },
+            "reason must be a string or None",
+        ),
+    ],
+)
+def test_data_readiness_sensor_rejects_invalid_provider_signal(
+    sensor_exports: dict[str, Any],
+    signal: object,
+    message: str,
+) -> None:
+    build_sensor_context = sensor_exports["build_sensor_context"]
+    data_readiness_sensor = sensor_exports["data_readiness_sensor"]
+    context = build_sensor_context(
+        resources={
+            "data_readiness": _RawReadinessResource(signal),
+            "gate_policy": FakeGatePolicyResource(),
+        },
+    )
+
+    with pytest.raises(TypeError, match=message):
+        data_readiness_sensor.evaluation_fn(context)
 
 
 def test_data_readiness_sensor_name(sensor_exports: dict[str, Any]) -> None:
@@ -159,3 +214,11 @@ def test_schedule_and_sensor_can_be_collected_together(
 
     assert daily_cycle_schedule in defs.schedules
     assert data_readiness_sensor in defs.sensors
+
+
+class _RawReadinessResource:
+    def __init__(self, signal: object) -> None:
+        self.signal = signal
+
+    def get_data_readiness_signal(self) -> object:
+        return self.signal

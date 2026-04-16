@@ -99,6 +99,25 @@ def test_build_definitions_is_loadable(
     )
 
 
+def test_build_definitions_keeps_llm_check_fail_closed_without_probe_resource(
+    definitions_exports: dict[str, Any],
+) -> None:
+    build_definitions = definitions_exports["build_definitions"]
+
+    defs = build_definitions(policy_path="config/policy/gate_policy.lite.yaml")
+
+    assert "llm_health_probe" in defs.resources
+    assert "llm_health_check" in _check_names(defs)
+
+    probe_resource = defs.resources["llm_health_probe"]
+    create_resource = getattr(probe_resource, "create_resource")
+    probe = create_resource(None)
+    health = probe.check_health()
+    assert health.healthy is False
+    assert health.provider == "missing"
+    assert "not configured" in health.summary
+
+
 def test_daily_cycle_job_selects_phase0_readiness_ping(
     definitions_exports: dict[str, Any],
 ) -> None:

@@ -68,7 +68,7 @@ def test_classify_dbt_test_failure_from_node_name(gate_policy: Any) -> None:
     )
 
 
-def test_plan_dbt_test_partial_rerun_uses_failed_asset_key_only(
+def test_plan_dbt_test_partial_rerun_uses_validated_event_asset_key(
     gate_policy: Any,
 ) -> None:
     event = {
@@ -96,21 +96,59 @@ def test_plan_dbt_test_partial_rerun_uses_failed_asset_key_only(
     assert "candidate_freeze" not in plan.rerun_selection
 
 
+def test_plan_dbt_test_partial_rerun_rejects_asset_key_mismatch(
+    gate_policy: Any,
+) -> None:
+    event = {
+        "asset_key": FakeAssetKey(("other_dbt_asset",)),
+        "metadata": {
+            "node_info": {
+                "node_name": "not_null_heartbeat_heartbeat",
+            }
+        },
+    }
+
+    with pytest.raises(ValueError, match="does not match failed_asset_key"):
+        plan_dbt_test_partial_rerun(
+            "run-dbt",
+            FakeAssetKey(("dbt_phase0_assets",)),
+            event,
+            gate_policy,
+        )
+
+
 def test_dbt_test_failure_with_missing_metadata_still_maps_to_task_level(
     gate_policy: Any,
 ) -> None:
     decision = classify_dbt_test_failure(MissingMetadataEvent(), gate_policy)
-    plan = plan_dbt_test_partial_rerun(
-        "run-missing-metadata",
-        "heartbeat",
-        MissingMetadataEvent(),
-        gate_policy,
-    )
 
     assert decision.phase is PhaseEnum.PHASE0
     assert decision.failure_class is FailureClass.TASK_LEVEL
     assert decision.action is GateAction.PARTIAL_RERUN
-    assert plan.rerun_selection == ("heartbeat",)
+
+
+def test_plan_dbt_test_partial_rerun_rejects_dbt_group_without_event_asset_key(
+    gate_policy: Any,
+) -> None:
+    with pytest.raises(ValueError, match="asset_key metadata is required"):
+        plan_dbt_test_partial_rerun(
+            "run-missing-metadata",
+            "dbt_phase0_assets",
+            MissingMetadataEvent(),
+            gate_policy,
+        )
+
+
+def test_plan_dbt_test_partial_rerun_rejects_unvalidated_missing_asset_metadata(
+    gate_policy: Any,
+) -> None:
+    with pytest.raises(ValueError, match="asset_key metadata is required"):
+        plan_dbt_test_partial_rerun(
+            "run-missing-metadata",
+            "heartbeat",
+            MissingMetadataEvent(),
+            gate_policy,
+        )
 
 
 def test_dbt_partial_rerun_denied_policy_raises(gate_policy: Any) -> None:

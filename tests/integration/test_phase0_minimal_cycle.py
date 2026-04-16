@@ -3,9 +3,13 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
-from typing import Any
 
 import pytest
+
+from tests.integration.conftest import (
+    asset_check_evaluations,
+    asset_materialization_keys,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FORBIDDEN_ROOT_MODULES = (
@@ -20,12 +24,13 @@ _FORBIDDEN_BUSINESS_IMPORT = re.compile(
 
 
 def test_materialize_phase0_readiness_ping(
+    dagster_module: object,
+    dagster_dbt_module: object,
     dagster_instance: object,
     stub_policy_path: str,
     tmp_dbt_project: Path,
 ) -> None:
-    dagster = pytest.importorskip("dagster", reason="dagster is not installed")
-    pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
+    dagster = dagster_module
 
     from orchestrator.checks.resources import GatePolicyResource
     from orchestrator.jobs.phase0 import phase0_readiness_ping
@@ -41,26 +46,52 @@ def test_materialize_phase0_readiness_ping(
     assert result.success is True
 
 
-def test_asset_check_passes(stub_policy_path: str) -> None:
-    pytest.importorskip("dagster", reason="dagster is not installed")
-
-    from orchestrator.checks.asset_checks import phase0_ping_check
-    from orchestrator.checks.resources import GatePolicyResource
-
-    result = execute_asset_check(
-        phase0_ping_check,
-        gate_policy=GatePolicyResource(policy_path=stub_policy_path),
-    )
-
-    assert result.passed is True
-
-
-def test_definitions_loads_without_errors(
+def test_phase0_ping_check_emits_asset_check_evaluation(
+    dagster_module: object,
+    dagster_dbt_module: object,
+    dagster_instance: object,
     stub_policy_path: str,
     tmp_dbt_project: Path,
 ) -> None:
-    dagster = pytest.importorskip("dagster", reason="dagster is not installed")
-    pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
+    dagster = dagster_module
+    from orchestrator.checks.asset_checks import phase0_ping_check
+    from orchestrator.checks.resources import GatePolicyResource
+    from orchestrator.jobs.phase0 import phase0_readiness_ping
+
+    job = dagster.define_asset_job(
+        "phase0_ping_check_job",
+        selection=dagster.AssetSelection.assets("phase0_readiness_ping"),
+    )
+    defs = dagster.Definitions(
+        assets=[phase0_readiness_ping],
+        asset_checks=[phase0_ping_check],
+        jobs=[job],
+        resources={
+            "gate_policy": GatePolicyResource(policy_path=stub_policy_path),
+        },
+    )
+
+    result = defs.get_job_def("phase0_ping_check_job").execute_in_process(
+        instance=dagster_instance,
+    )
+    evaluations = asset_check_evaluations(result)
+
+    assert result.success is True
+    assert len(evaluations) >= 1
+    assert any(
+        _check_name(evaluation) == "phase0_ping_check"
+        and getattr(evaluation, "passed", None) is True
+        for evaluation in evaluations
+    )
+
+
+def test_definitions_loads_without_errors(
+    dagster_module: object,
+    dagster_dbt_module: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
 
     from orchestrator.definitions import build_definitions
 
@@ -70,15 +101,14 @@ def test_definitions_loads_without_errors(
 
 
 def test_daily_cycle_job_executes_in_process(
+    dagster_module: object,
+    dagster_dbt_module: object,
     dagster_instance: object,
     stub_policy_path: str,
     tmp_dbt_project: Path,
 ) -> None:
-    dagster = pytest.importorskip("dagster", reason="dagster is not installed")
-    dagster_dbt = pytest.importorskip(
-        "dagster_dbt",
-        reason="dagster-dbt is not installed",
-    )
+    dagster = dagster_module
+    dagster_dbt = dagster_dbt_module
 
     from orchestrator.checks.asset_checks import phase0_ping_check
     from orchestrator.checks.resources import GatePolicyResource
@@ -105,15 +135,17 @@ def test_daily_cycle_job_executes_in_process(
     result = defs.get_job_def("daily_cycle_job").execute_in_process(
         instance=dagster_instance,
     )
-    materializations = [
-        event
-        for event in result.all_events
-        if getattr(event, "is_step_materialization", False)
-        or getattr(event, "event_type_value", None) == "ASSET_MATERIALIZATION"
-    ]
+    materialized_keys = asset_materialization_keys(result)
+    evaluations = asset_check_evaluations(result)
+    heartbeat_key = _heartbeat_asset_key(dbt_phase0_assets)
 
     assert result.success is True
-    assert len(materializations) >= 1
+    assert dagster.AssetKey(["phase0_readiness_ping"]) in materialized_keys
+    assert heartbeat_key in materialized_keys
+    assert len(evaluations) >= 1
+    assert "phase0_ping_check" in {
+        _check_name(evaluation) for evaluation in evaluations
+    }
 
 
 def test_no_business_imports() -> None:
@@ -141,8 +173,18 @@ def _absolute_imports(tree: ast.AST) -> list[tuple[str, int]]:
     return imports
 
 
-def execute_asset_check(check_def: Any, **resource_kwargs: object) -> Any:
-    if not callable(check_def):
-        pytest.fail("asset check definition is not directly executable")
+def _heartbeat_asset_key(dbt_phase0_assets: object) -> object:
+    for asset_key in getattr(dbt_phase0_assets, "keys", ()):
+        path = tuple(getattr(asset_key, "path", ()))
+        if path and path[-1] == "heartbeat":
+            return asset_key
+    pytest.fail("dbt heartbeat model asset key was not registered")
 
-    return check_def(**resource_kwargs)
+
+def _check_name(evaluation: object) -> str | None:
+    check_name = getattr(evaluation, "check_name", None)
+    if isinstance(check_name, str):
+        return check_name
+    check_key = getattr(evaluation, "check_key", None)
+    name = getattr(check_key, "name", None)
+    return name if isinstance(name, str) else None

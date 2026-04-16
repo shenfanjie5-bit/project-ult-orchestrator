@@ -80,6 +80,7 @@ def test_alert_payload_optional_fields_allow_none() -> None:
     )
 
     assert payload.failed_node is None
+    assert payload.failure_class is None
     assert payload.runbook_url is None
 
 
@@ -93,6 +94,7 @@ def test_alert_payload_field_set_matches_runbook_payload() -> None:
         "failed_node",
         "action",
         "summary",
+        "failure_class",
         "runbook_url",
     }
 
