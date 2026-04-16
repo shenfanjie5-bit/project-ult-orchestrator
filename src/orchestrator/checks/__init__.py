@@ -6,7 +6,12 @@ from orchestrator.checks.dbt_events import (
     classify_dbt_test_failure,
     plan_dbt_test_partial_rerun,
 )
-from orchestrator.checks.models import DataReadinessSignal, GateDecision
+from orchestrator.checks.models import (
+    DataReadinessSignal,
+    GateDecision,
+    LLMHealthProbe,
+    LLMHealthResult,
+)
 from orchestrator.policy import FailureClass, GateAction, PhaseEnum
 
 
@@ -19,6 +24,10 @@ def __getattr__(name: str) -> object:
         from orchestrator.checks.asset_checks import phase0_ping_check
 
         return phase0_ping_check
+    if name == "llm_health_check":
+        from orchestrator.checks.asset_checks import llm_health_check
+
+        return llm_health_check
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -28,11 +37,14 @@ __all__ = [
     "DataReadinessSignal",
     "GateDecision",
     "GatePolicyResource",
+    "LLMHealthProbe",
+    "LLMHealthResult",
     "PhaseEnum",
     "UnknownGateFailure",
     "classify_gate_result",
     "classify_dbt_test_failure",
     "dispatch_gate_decision_alert",
+    "llm_health_check",
     "phase0_ping_check",
     "plan_dbt_test_partial_rerun",
 ]

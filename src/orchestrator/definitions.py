@@ -9,7 +9,11 @@ from pathlib import Path
 from dagster import AssetKey, Definitions
 from dagster_dbt import DbtCliResource
 
-from orchestrator.checks import GatePolicyResource, phase0_ping_check
+from orchestrator.checks import (
+    GatePolicyResource,
+    llm_health_check,
+    phase0_ping_check,
+)
 from orchestrator.jobs.cycle import daily_cycle_job
 from orchestrator.jobs.phase0 import (
     DBT_PROFILES_DIR,
@@ -63,6 +67,7 @@ def build_definitions(
         ],
         asset_checks=[
             phase0_ping_check,
+            llm_health_check,
             *provider_checks,
         ],
         jobs=[daily_cycle_job],
@@ -82,19 +87,32 @@ def build_definitions(
 
 def _validate_phase0_provider_assets(provider_assets: Iterable[object]) -> None:
     candidate_freeze_key = AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY])
+    has_phase0_provider_asset = False
+    has_candidate_freeze = False
 
     for asset_def in provider_assets:
-        if candidate_freeze_key not in getattr(asset_def, "keys", ()):
+        keys = tuple(getattr(asset_def, "keys", ()))
+        group_names = getattr(asset_def, "group_names_by_key", {})
+        if any(
+            group_names.get(asset_key) == PHASE0_GROUP_NAME for asset_key in keys
+        ):
+            has_phase0_provider_asset = True
+
+        if candidate_freeze_key not in keys:
             continue
 
-        group_name = getattr(asset_def, "group_names_by_key", {}).get(
-            candidate_freeze_key,
-        )
+        has_candidate_freeze = True
+        group_name = group_names.get(candidate_freeze_key)
         if group_name != PHASE0_GROUP_NAME:
             raise ValueError(
                 "candidate_freeze asset must declare "
                 f"group_name={PHASE0_GROUP_NAME!r}; got {group_name!r}",
             )
+
+    if has_phase0_provider_asset and not has_candidate_freeze:
+        raise ValueError(
+            "phase0 provider assets must include candidate_freeze",
+        )
 
 
 defs = build_definitions()

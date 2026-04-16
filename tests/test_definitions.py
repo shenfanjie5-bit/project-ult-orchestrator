@@ -55,15 +55,22 @@ def test_build_definitions_collects_p1a_surface(
         "manual_rerun_sensor",
     }
     assert AssetKey(["fake_phase0_asset"]) in _asset_keys(defs)
+    assert AssetKey(["candidate_freeze"]) in _asset_keys(defs)
+    assert "phase0_ping_check" in _check_names(defs)
+    assert "llm_health_check" in _check_names(defs)
     assert "fake_phase0_check" in _check_names(defs)
     assert "gate_policy" in defs.resources
     assert "resource_bundle" in defs.resources
     assert "fake_data_platform_resource" in defs.resources
+    assert "llm_health_probe" in defs.resources
     assert "orchestration_context_stub" not in defs.resources
 
     bundle = defs.resources["resource_bundle"]
     assert isinstance(bundle, ResourceBundle)
-    assert bundle.resource_keys == ("fake_data_platform_resource",)
+    assert bundle.resource_keys == (
+        "fake_data_platform_resource",
+        "llm_health_probe",
+    )
     assert bundle.source_modules == (__name__,)
     assert bundle.config_ref == "config/policy/gate_policy.lite.yaml"
     assert bundle.read_only is True
@@ -165,13 +172,57 @@ def test_duplicate_provider_resource_key_raises_value_error(
         )
 
 
+def test_phase0_provider_missing_candidate_freeze_is_rejected(
+    definitions_exports: dict[str, Any],
+) -> None:
+    build_definitions = definitions_exports["build_definitions"]
+    dagster = definitions_exports["dagster"]
+
+    @dagster.asset(name="fake_phase0_asset", group_name="phase0")
+    def fake_phase0_asset() -> str:
+        return "ok"
+
+    class MissingCandidateProvider:
+        def get_assets(self) -> tuple[object, ...]:
+            return (fake_phase0_asset,)
+
+        def get_checks(self) -> tuple[object, ...]:
+            return ()
+
+        def get_resources(self) -> dict[str, object]:
+            return {}
+
+    with pytest.raises(
+        ValueError,
+        match="phase0 provider assets must include candidate_freeze",
+    ):
+        build_definitions(module_factories=[MissingCandidateProvider()])
+
+
 def _fake_provider(dagster: Any) -> object:
     class FakeDataPlatformResource(dagster.ConfigurableResource):
         def create_resource(self, context: object) -> dict[str, str]:
             return {"status": "ok"}
 
+    class FakeLLMHealthResult:
+        healthy = True
+        summary = "provider ready"
+        provider = "fake-llm"
+
+    class FakeLLMHealthProbe:
+        def check_health(self) -> FakeLLMHealthResult:
+            return FakeLLMHealthResult()
+
+    class FakeLLMHealthProbeResource(dagster.ConfigurableResource):
+        def create_resource(self, context: object) -> FakeLLMHealthProbe:
+            return FakeLLMHealthProbe()
+
     @dagster.asset(name="fake_phase0_asset", group_name="phase0")
     def fake_phase0_asset() -> str:
+        return "ok"
+
+    @dagster.asset(name="candidate_freeze", group_name="phase0")
+    def candidate_freeze() -> str:
         return "ok"
 
     @dagster.asset_check(asset=fake_phase0_asset, name="fake_phase0_check")
@@ -180,7 +231,7 @@ def _fake_provider(dagster: Any) -> object:
 
     class FakeDataPlatformProvider:
         def get_assets(self) -> tuple[object, ...]:
-            return (fake_phase0_asset,)
+            return (fake_phase0_asset, candidate_freeze)
 
         def get_checks(self) -> tuple[object, ...]:
             return (fake_phase0_check,)
@@ -190,7 +241,11 @@ def _fake_provider(dagster: Any) -> object:
                 "fake_data_platform_resource": cast(
                     object,
                     FakeDataPlatformResource(),
-                )
+                ),
+                "llm_health_probe": cast(
+                    object,
+                    FakeLLMHealthProbeResource(),
+                ),
             }
 
     return FakeDataPlatformProvider()
