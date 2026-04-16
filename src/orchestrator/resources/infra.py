@@ -20,6 +20,10 @@ from orchestrator.policy import (
 )
 
 INFRA_UNAVAILABLE_HARD_STOP_SCENARIO_ID = "infra_unavailable_hard_stop"
+_INFRA_HARD_STOP_REASON = (
+    "Core storage or graph infrastructure is unavailable; hard stop."
+)
+_FALLBACK_ALERT_CHANNELS = ("logging",)
 CORE_INFRASTRUCTURE_RESOURCE_KEYS = frozenset(
     {
         "dbt",
@@ -43,6 +47,7 @@ _GUARDED_METHODS_BY_RESOURCE_KEY: Mapping[str, frozenset[str]] = MappingProxyTyp
         "data_readiness": frozenset(
             {
                 "get_data_readiness_signal",
+                "get_readiness_signal",
                 "get_data_readiness",
             },
         ),
@@ -184,6 +189,8 @@ class _GuardedInfrastructureValue:
     def __getattr__(self, name: str) -> object:
         try:
             attribute = getattr(self._value, name)
+        except AttributeError:
+            raise
         except InfrastructureUnavailableError:
             raise
         except Exception as exc:
@@ -293,16 +300,32 @@ def _raise_infrastructure_unavailable(
         phase=phase,
         reason=_exception_summary(exc),
     )
-    policy = load_gate_policy(policy_path)
-    decision = classify_infrastructure_failure(phase, event, policy)
+    try:
+        policy = load_gate_policy(policy_path)
+    except Exception:
+        decision = _fallback_infrastructure_decision(phase)
+        channels = _FALLBACK_ALERT_CHANNELS
+    else:
+        decision = classify_infrastructure_failure(phase, event, policy)
+        channels = policy.alert_channels
+
     dispatch_gate_decision_alert(
         decision,
         cycle_id=_cycle_id_from_context(context),
         failed_node=resource_key,
         summary=_infra_summary(resource_key, exc),
-        channels=policy.alert_channels,
+        channels=channels,
     )
     raise InfrastructureUnavailableError(event, decision, exc) from exc
+
+
+def _fallback_infrastructure_decision(phase: PhaseEnum) -> GateDecision:
+    return GateDecision(
+        phase=phase,
+        failure_class=FailureClass.INFRA,
+        action=GateAction.FAIL_RUN,
+        reason=_INFRA_HARD_STOP_REASON,
+    )
 
 
 def _infra_summary(resource_key: str, exc: BaseException) -> str:

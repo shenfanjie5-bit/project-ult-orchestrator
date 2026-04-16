@@ -60,6 +60,43 @@ def test_daily_cycle_hard_stops_on_guarded_resource_init_failure(
     assert f"fake {failing_resource_key} unavailable" in str(payload["summary"])
 
 
+def test_daily_cycle_alerts_when_gate_policy_resource_load_fails(
+    dagster_module: object,
+    dagster_instance: object,
+    tmp_dbt_project: Path,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dagster = dagster_module
+    missing_policy_path = tmp_path / "missing_gate_policy.yaml"
+    defs = _build_defs(
+        dagster,
+        monkeypatch=monkeypatch,
+        stub_policy_path=str(missing_policy_path),
+        failing_resource_key="none",
+    )
+    dagster.Definitions.validate_loadable(defs)
+
+    with caplog.at_level(logging.WARNING, logger="orchestrator.alerting.dispatcher"):
+        result = defs.get_job_def("daily_cycle_job").execute_in_process(
+            instance=dagster_instance,
+            raise_on_error=False,
+            tags={"cycle_id": "cycle-20260416"},
+        )
+
+    materialized_keys = asset_materialization_keys(result)
+    payload = _single_alert_for_resource(caplog.records, "gate_policy")
+
+    assert result.success is False
+    assert dagster.AssetKey(["graph_promotion"]) not in materialized_keys
+    assert payload["phase"] == "phase0"
+    assert payload["failure_class"] == "infra"
+    assert payload["action"] == "fail_run"
+    assert payload["failed_node"] == "gate_policy"
+    assert missing_policy_path.name in str(payload["summary"])
+
+
 def _build_defs(
     dagster: Any,
     *,
