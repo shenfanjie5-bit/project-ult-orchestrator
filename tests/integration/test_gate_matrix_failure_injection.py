@@ -43,17 +43,15 @@ def case(
 
 
 def test_gate_matrix_failure_cases_cover_required_scenarios(
-    dagster_module: object,
     stub_policy_path: str,
     tmp_path: Path,
-    tmp_dbt_project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cases = gate_matrix_failure_cases(
-        dagster_module,
+        object(),
         stub_policy_path=stub_policy_path,
         tmp_path=tmp_path,
-        tmp_dbt_project=tmp_dbt_project,
+        tmp_dbt_project=tmp_path,
         monkeypatch=monkeypatch,
     )
 
