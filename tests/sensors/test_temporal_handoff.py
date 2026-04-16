@@ -313,6 +313,47 @@ def test_temporal_handoff_sensor_cursor_does_not_reprocess_older_run(
     assert context.updated_cursor is None
 
 
+def test_temporal_handoff_sensor_processes_unseen_run_at_same_timestamp(
+    temporal_sensor_exports: dict[str, Any],
+) -> None:
+    SkipReason = temporal_sensor_exports["SkipReason"]
+    build_temporal_handoff_sensor = temporal_sensor_exports[
+        "build_temporal_handoff_sensor"
+    ]
+    client = RecordingHandoffClient()
+    context = _FakeTemporalSensorContext(
+        resources={
+            "resource_bundle": SimpleNamespace(
+                resources={"temporal_handoff_client": client},
+            ),
+        },
+        runs=[
+            _phase0_run_record("phase0-run-2", "cycle-20260417", timestamp=2.0),
+            _phase0_run_record("phase0-run-1", "cycle-20260416", timestamp=2.0),
+        ],
+    )
+    sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
+
+    first_result = sensor_definition.evaluation_fn(context)
+    second_result = sensor_definition.evaluation_fn(context)
+    third_result = sensor_definition.evaluation_fn(context)
+
+    assert isinstance(first_result, SkipReason)
+    assert isinstance(second_result, SkipReason)
+    assert isinstance(third_result, SkipReason)
+    assert [request.phase0_run_id for request in client.requests] == [
+        "phase0-run-2",
+        "phase0-run-1",
+    ]
+    assert "no successful daily_cycle_phase0_job run is ready" in (
+        third_result.skip_message
+    )
+    assert context.updated_cursor is not None
+    cursor = json.loads(context.updated_cursor)
+    assert cursor["processed_run_ids"] == ["phase0-run-1", "phase0-run-2"]
+    assert cursor["high_water_timestamp"] == 2.0
+
+
 def test_temporal_handoff_sensor_legacy_cursor_stops_at_processed_run(
     temporal_sensor_exports: dict[str, Any],
 ) -> None:

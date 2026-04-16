@@ -410,7 +410,7 @@ def _cursor_consumed_phase0_run(
     return (
         cursor.high_water_timestamp is not None
         and run_timestamp is not None
-        and run_timestamp <= cursor.high_water_timestamp
+        and run_timestamp < cursor.high_water_timestamp
     )
 
 
