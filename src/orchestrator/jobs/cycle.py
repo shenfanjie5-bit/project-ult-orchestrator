@@ -210,15 +210,30 @@ daily_cycle_job = define_asset_job(
 )
 
 
+daily_cycle_phase0_job = define_asset_job(
+    name="daily_cycle_phase0_job",
+    selection=AssetSelection.groups(PHASE0_GROUP_NAME),
+)
+
+
 def build_daily_cycle_jobs(
     phase_config: Mapping[str, Any] | None,
 ) -> tuple[object, ...]:
     """Build daily cycle jobs from the phase configuration facade."""
 
-    return (daily_cycle_job,)
+    execution_backend = (
+        phase_config.get("execution_backend") if phase_config is not None else None
+    )
+    if execution_backend in (None, "dagster_only"):
+        return (daily_cycle_job,)
+    if execution_backend == "dagster_plus_temporal":
+        return (daily_cycle_phase0_job, daily_cycle_job)
+
+    raise ValueError(f"unsupported execution_backend: {execution_backend!r}")
 
 
 __all__ = [
     "build_daily_cycle_jobs",
     "daily_cycle_job",
+    "daily_cycle_phase0_job",
 ]

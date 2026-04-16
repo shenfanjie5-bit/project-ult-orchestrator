@@ -25,7 +25,7 @@ from orchestrator.jobs.audit import (
     AUDIT_EVAL_GROUP_NAME,
     RETROSPECTIVE_HOOK_ASSET_KEY,
 )
-from orchestrator.jobs.cycle import daily_cycle_job
+from orchestrator.jobs.cycle import build_daily_cycle_jobs
 from orchestrator.jobs.phase0 import (
     DBT_PROFILES_DIR,
     DBT_PROJECT_DIR,
@@ -46,19 +46,21 @@ from orchestrator.jobs.phase3 import (
     PHASE3_GROUP_NAME,
     PHASE3_MANIFEST_ASSET_KEY,
 )
+from orchestrator.policy import load_gate_policy
 from orchestrator.resources import (
     INFRASTRUCTURE_RESOURCE_PHASES,
     AssetFactoryProvider,
     build_resource_bundle,
     guard_infrastructure_resource,
 )
-from orchestrator.schedules import daily_cycle_schedule
+from orchestrator.schedules import build_daily_cycle_schedule
 from orchestrator.sensors.data_readiness import (
     DATA_READINESS_PROVIDER_RESOURCE_KEY,
     DATA_READINESS_RESOURCE_KEY,
-    data_readiness_sensor,
+    build_data_readiness_sensor,
 )
 from orchestrator.sensors.manual_rerun import manual_rerun_sensor
+from orchestrator.sensors.temporal_handoff import build_temporal_handoff_sensor
 
 DEFAULT_POLICY_PATH = "config/policy/gate_policy.lite.yaml"
 _RESERVED_RESOURCE_KEYS = ("gate_policy", "dbt", "resource_bundle")
@@ -186,6 +188,15 @@ def build_definitions(
             DEFAULT_POLICY_PATH,
         )
     module_factory_list = _resolve_module_factories(module_factories)
+    policy = load_gate_policy(policy_path)
+    phase_config = {"execution_backend": policy.execution_backend}
+    daily_cycle_jobs = build_daily_cycle_jobs(phase_config)
+    automatic_cycle_job = daily_cycle_jobs[0]
+    daily_cycle_schedule = build_daily_cycle_schedule(automatic_cycle_job)
+    data_readiness_sensor = build_data_readiness_sensor(automatic_cycle_job)
+    sensors: list[object] = [data_readiness_sensor, manual_rerun_sensor]
+    if policy.execution_backend == "dagster_plus_temporal":
+        sensors.append(build_temporal_handoff_sensor(policy=policy))
 
     resource_bundle = build_resource_bundle(str(policy_path), module_factory_list)
     for reserved in _RESERVED_RESOURCE_KEYS:
@@ -249,9 +260,9 @@ def build_definitions(
             *builtin_checks,
             *provider_checks,
         ],
-        jobs=[daily_cycle_job],
+        jobs=list(daily_cycle_jobs),
         schedules=[daily_cycle_schedule],
-        sensors=[data_readiness_sensor, manual_rerun_sensor],
+        sensors=sensors,
         resources=resources,
     )
 

@@ -11,6 +11,10 @@ _PUBLIC_JOB_IMPORTS = {
         "build_daily_cycle_jobs",
     ),
     "daily_cycle_job": ("orchestrator.jobs.cycle", "daily_cycle_job"),
+    "daily_cycle_phase0_job": (
+        "orchestrator.jobs.cycle",
+        "daily_cycle_phase0_job",
+    ),
     "PHASE0_CANDIDATE_FREEZE_ASSET_KEY": (
         "orchestrator.jobs.phase0",
         "PHASE0_CANDIDATE_FREEZE_ASSET_KEY",
@@ -77,6 +81,7 @@ __all__ = [
     "RETROSPECTIVE_HOOK_ASSET_KEY",
     "build_daily_cycle_jobs",
     "daily_cycle_job",
+    "daily_cycle_phase0_job",
     "dbt_phase0_assets",
     "phase0_readiness_ping",
 ]
