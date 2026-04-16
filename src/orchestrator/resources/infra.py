@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from inspect import isgenerator
+from inspect import Parameter, isgenerator, signature
 from types import MappingProxyType
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from orchestrator.checks.classifier import classify_gate_result
 from orchestrator.checks.decision_handler import dispatch_gate_decision_alert
@@ -24,22 +24,49 @@ _INFRA_HARD_STOP_REASON = (
     "Core storage or graph infrastructure is unavailable; hard stop."
 )
 _FALLBACK_ALERT_CHANNELS = ("logging",)
-CORE_INFRASTRUCTURE_RESOURCE_KEYS = frozenset(
-    {
-        "dbt",
-        "gate_policy",
-        "data_readiness",
-        "llm_health_probe",
-        "phase2_pool_failure_rate",
-    },
+PROVIDER_RESOURCE_CONSTRUCTION_KEY = "provider_resource_construction"
+_GUARDED_RESOURCE_ATTR = "_orchestrator_infrastructure_guard_key"
+
+
+@dataclass(frozen=True, slots=True)
+class InfrastructureResourceRegistryEntry:
+    """Hard-stop metadata for one infrastructure resource key."""
+
+    key: str
+    phase: PhaseEnum
+
+
+_INFRASTRUCTURE_RESOURCE_REGISTRY_ENTRIES = (
+    InfrastructureResourceRegistryEntry("dbt", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("gate_policy", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("data_readiness", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("llm_health_probe", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("postgres", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("postgresql", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("postgres_engine", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("pg_engine", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("dagster_instance_storage", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("iceberg_catalog", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("neo4j", PhaseEnum.PHASE1),
+    InfrastructureResourceRegistryEntry("neo4j_driver", PhaseEnum.PHASE1),
+    InfrastructureResourceRegistryEntry("graph_backend", PhaseEnum.PHASE1),
+    InfrastructureResourceRegistryEntry("phase2_pool_failure_rate", PhaseEnum.PHASE2),
+    InfrastructureResourceRegistryEntry(
+        PROVIDER_RESOURCE_CONSTRUCTION_KEY,
+        PhaseEnum.PHASE0,
+    ),
 )
+INFRASTRUCTURE_RESOURCE_REGISTRY: Mapping[
+    str,
+    InfrastructureResourceRegistryEntry,
+] = MappingProxyType(
+    {entry.key: entry for entry in _INFRASTRUCTURE_RESOURCE_REGISTRY_ENTRIES},
+)
+CORE_INFRASTRUCTURE_RESOURCE_KEYS = frozenset(INFRASTRUCTURE_RESOURCE_REGISTRY)
 INFRASTRUCTURE_RESOURCE_PHASES: Mapping[str, PhaseEnum] = MappingProxyType(
     {
-        "dbt": PhaseEnum.PHASE0,
-        "gate_policy": PhaseEnum.PHASE0,
-        "data_readiness": PhaseEnum.PHASE0,
-        "llm_health_probe": PhaseEnum.PHASE0,
-        "phase2_pool_failure_rate": PhaseEnum.PHASE2,
+        key: entry.phase
+        for key, entry in INFRASTRUCTURE_RESOURCE_REGISTRY.items()
     },
 )
 _GUARDED_METHODS_BY_RESOURCE_KEY: Mapping[str, frozenset[str]] = MappingProxyType(
@@ -133,6 +160,8 @@ def guard_infrastructure_resource(
 
     if resource_key not in CORE_INFRASTRUCTURE_RESOURCE_KEYS:
         return resource
+    if getattr(resource, _GUARDED_RESOURCE_ATTR, None) == resource_key:
+        return resource
 
     from dagster import ResourceDefinition
 
@@ -162,10 +191,44 @@ def guard_infrastructure_resource(
         finally:
             _run_finalizers(finalizers)
 
-    return ResourceDefinition(
+    guarded_resource = ResourceDefinition(
         resource_fn=_resource_fn,
+        config_schema=getattr(resource, "config_schema", None),
         description=f"Guarded infrastructure resource for {resource_key}.",
+        required_resource_keys=getattr(resource, "required_resource_keys", None),
+        version=getattr(resource, "version", None),
     )
+    setattr(guarded_resource, _GUARDED_RESOURCE_ATTR, resource_key)
+    return guarded_resource
+
+
+def guard_provider_resource_construction(
+    module_factory: object,
+    *,
+    env_config: Mapping[str, Any] | str | None,
+) -> Mapping[str, object]:
+    """Collect provider resources through the same infra hard-stop path."""
+
+    get_resources = getattr(module_factory, "get_resources")
+    if not callable(get_resources):
+        msg = "module factory get_resources attribute is not callable"
+        raise TypeError(msg)
+
+    try:
+        resources = get_resources()
+    except InfrastructureUnavailableError:
+        raise
+    except Exception as exc:
+        resource_key = _provider_failure_resource_key(module_factory)
+        _raise_infrastructure_unavailable(
+            resource_key=resource_key,
+            phase=_phase_for_resource_key(resource_key),
+            policy_path=_policy_path_from_env_config(env_config),
+            context=_BundleAssemblyContext(module_factory),
+            exc=exc,
+        )
+
+    return resources
 
 
 class _GuardedInfrastructureValue:
@@ -261,7 +324,7 @@ def _initialize_resource(
 
     resource_fn = getattr(resource, "resource_fn", None)
     if callable(resource_fn):
-        created = resource_fn(context)
+        created = _call_with_optional_context(resource_fn, context)
         if isgenerator(created):
             try:
                 value = next(created)
@@ -272,6 +335,34 @@ def _initialize_resource(
         return created, tuple(finalizers)
 
     return resource, tuple(finalizers)
+
+
+def _call_with_optional_context(
+    resource_fn: Callable[..., object],
+    context: object,
+) -> object:
+    if _has_at_least_one_parameter(resource_fn):
+        return resource_fn(context)
+    return resource_fn()
+
+
+def _has_at_least_one_parameter(callable_obj: Callable[..., object]) -> bool:
+    try:
+        parameters = signature(callable_obj).parameters.values()
+    except (TypeError, ValueError):
+        return True
+
+    return any(
+        parameter.kind
+        in {
+            Parameter.POSITIONAL_ONLY,
+            Parameter.POSITIONAL_OR_KEYWORD,
+            Parameter.VAR_POSITIONAL,
+            Parameter.KEYWORD_ONLY,
+            Parameter.VAR_KEYWORD,
+        }
+        for parameter in parameters
+    )
 
 
 def _close_resource_generator(generator: object) -> None:
@@ -319,6 +410,54 @@ def _raise_infrastructure_unavailable(
     raise InfrastructureUnavailableError(event, decision, exc) from exc
 
 
+@dataclass(frozen=True, slots=True)
+class _BundleAssemblyContext:
+    module_factory: object
+    run_id: str = "resource-bundle-assembly"
+
+
+def _provider_failure_resource_key(module_factory: object) -> str:
+    for attr_name in (
+        "infrastructure_resource_key",
+        "infra_resource_key",
+        "resource_key",
+    ):
+        declared = getattr(module_factory, attr_name, None)
+        if isinstance(declared, str) and declared in CORE_INFRASTRUCTURE_RESOURCE_KEYS:
+            return declared
+
+    for attr_name in ("infrastructure_resource_keys", "infra_resource_keys"):
+        declared_keys = getattr(module_factory, attr_name, None)
+        if isinstance(declared_keys, str):
+            declared_keys = (declared_keys,)
+        if declared_keys is None:
+            continue
+        try:
+            iterator = iter(declared_keys)
+        except TypeError:
+            continue
+        for declared in iterator:
+            if isinstance(declared, str) and declared in CORE_INFRASTRUCTURE_RESOURCE_KEYS:
+                return declared
+
+    return PROVIDER_RESOURCE_CONSTRUCTION_KEY
+
+
+def _phase_for_resource_key(resource_key: str) -> PhaseEnum:
+    return INFRASTRUCTURE_RESOURCE_PHASES.get(resource_key, PhaseEnum.PHASE0)
+
+
+def _policy_path_from_env_config(env_config: Mapping[str, Any] | str | None) -> str:
+    if isinstance(env_config, str):
+        return env_config
+    if isinstance(env_config, Mapping):
+        for key in ("policy_path", "gate_policy_path", "config_ref"):
+            value = env_config.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 def _fallback_infrastructure_decision(phase: PhaseEnum) -> GateDecision:
     return GateDecision(
         phase=phase,
@@ -355,9 +494,13 @@ def _cycle_id_from_context(context: object) -> str:
 __all__ = [
     "CORE_INFRASTRUCTURE_RESOURCE_KEYS",
     "INFRASTRUCTURE_RESOURCE_PHASES",
+    "INFRASTRUCTURE_RESOURCE_REGISTRY",
     "INFRA_UNAVAILABLE_HARD_STOP_SCENARIO_ID",
     "InfrastructureUnavailableError",
     "InfrastructureUnavailableEvent",
+    "InfrastructureResourceRegistryEntry",
+    "PROVIDER_RESOURCE_CONSTRUCTION_KEY",
     "classify_infrastructure_failure",
     "guard_infrastructure_resource",
+    "guard_provider_resource_construction",
 ]

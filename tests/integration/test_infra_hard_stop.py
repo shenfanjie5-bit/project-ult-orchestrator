@@ -19,6 +19,9 @@ _DOWNSTREAM_PUBLISH_ASSET_KEY = "phase2_downstream_publish"
         ("dbt", "graph_promotion"),
         ("data_readiness", "graph_promotion"),
         ("llm_health_probe", "graph_promotion"),
+        ("postgres_engine", "graph_promotion"),
+        ("iceberg_catalog", "graph_promotion"),
+        ("neo4j_driver", "graph_promotion"),
         ("phase2_pool_failure_rate", _DOWNSTREAM_PUBLISH_ASSET_KEY),
     ],
 )
@@ -53,7 +56,7 @@ def test_daily_cycle_hard_stops_on_guarded_resource_init_failure(
 
     assert result.success is False
     assert dagster.AssetKey([blocked_asset_key]) not in materialized_keys
-    assert payload["phase"] in {"phase0", "phase2"}
+    assert payload["phase"] in {"phase0", "phase1", "phase2"}
     assert payload["failure_class"] == "infra"
     assert payload["action"] == "fail_run"
     assert payload["failed_node"] == failing_resource_key
@@ -97,6 +100,39 @@ def test_daily_cycle_alerts_when_gate_policy_resource_load_fails(
     assert missing_policy_path.name in str(payload["summary"])
 
 
+def test_build_definitions_alerts_when_provider_get_resources_fails(
+    dagster_module: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import orchestrator.definitions as definitions_module
+    from orchestrator.resources import InfrastructureUnavailableError
+
+    class BrokenGraphProvider:
+        infrastructure_resource_key = "neo4j_driver"
+
+        def get_resources(self) -> dict[str, object]:
+            raise RuntimeError("fake neo4j driver construction failed")
+
+    with caplog.at_level(logging.WARNING, logger="orchestrator.alerting.dispatcher"):
+        with pytest.raises(InfrastructureUnavailableError) as error:
+            definitions_module.build_definitions(
+                module_factories=[BrokenGraphProvider()],
+                policy_path=stub_policy_path,
+            )
+
+    payload = _single_alert_for_resource(caplog.records, "neo4j_driver")
+
+    assert error.value.event.resource_key == "neo4j_driver"
+    assert error.value.decision.action.value == "fail_run"
+    assert payload["phase"] == "phase1"
+    assert payload["failure_class"] == "infra"
+    assert payload["action"] == "fail_run"
+    assert payload["failed_node"] == "neo4j_driver"
+    assert "fake neo4j driver construction failed" in payload["summary"]
+
+
 def _build_defs(
     dagster: Any,
     *,
@@ -116,7 +152,7 @@ def _build_defs(
     return definitions_module.build_definitions(
         module_factories=[
             _fake_phase0_surface_provider(dagster, failing_resource_key),
-            _fake_phase1_provider(dagster),
+            _fake_phase1_provider(dagster, failing_resource_key),
             _fake_phase2_provider(dagster, failing_resource_key),
         ],
         policy_path=stub_policy_path,
@@ -173,6 +209,12 @@ def _fake_phase0_surface_provider(
         def create_resource(self, context: object) -> FakeLLMHealthProbe:
             return FakeLLMHealthProbe()
 
+    class FakeCoreResource(dagster.ConfigurableResource):
+        resource_key: str
+
+        def create_resource(self, context: object) -> dict[str, str]:
+            return {"resource_key": self.resource_key}
+
     @dagster.asset(
         name=PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
         group_name=PHASE0_GROUP_NAME,
@@ -181,6 +223,8 @@ def _fake_phase0_surface_provider(
     def candidate_freeze(
         data_readiness: dagster.ResourceParam[object],
         dbt: dagster.ResourceParam[object],
+        postgres_engine: dagster.ResourceParam[object],
+        iceberg_catalog: dagster.ResourceParam[object],
     ) -> str:
         return "frozen"
 
@@ -209,15 +253,25 @@ def _fake_phase0_surface_provider(
             else:
                 llm_health_probe_resource = FakeLLMHealthProbeResource()
 
-            return {
+            resources: dict[str, object] = {
                 DATA_READINESS_RESOURCE_KEY: data_readiness_resource,
                 "llm_health_probe": llm_health_probe_resource,
             }
+            for resource_key in ("postgres_engine", "iceberg_catalog"):
+                if failing_resource_key == resource_key:
+                    resources[resource_key] = RaisingResource(
+                        resource_key=resource_key,
+                    )
+                else:
+                    resources[resource_key] = FakeCoreResource(
+                        resource_key=resource_key,
+                    )
+            return resources
 
     return FakePhase0SurfaceProvider()
 
 
-def _fake_phase1_provider(dagster: Any) -> object:
+def _fake_phase1_provider(dagster: Any, failing_resource_key: str) -> object:
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
         PHASE0_READINESS_ASSET_KEY,
@@ -236,7 +290,7 @@ def _fake_phase1_provider(dagster: Any) -> object:
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
         ],
     )
-    def graph_promotion() -> str:
+    def graph_promotion(neo4j_driver: dagster.ResourceParam[object]) -> str:
         return "promoted"
 
     @dagster.asset(
@@ -246,6 +300,14 @@ def _fake_phase1_provider(dagster: Any) -> object:
     def graph_snapshot(graph_promotion: str) -> str:
         return f"snapshot:{graph_promotion}"
 
+    class RaisingResource(dagster.ConfigurableResource):
+        def create_resource(self, context: object) -> object:
+            raise RuntimeError("fake neo4j_driver unavailable")
+
+    class FakeNeo4jDriverResource(dagster.ConfigurableResource):
+        def create_resource(self, context: object) -> dict[str, str]:
+            return {"resource_key": "neo4j_driver"}
+
     class FakePhase1Provider:
         def get_assets(self) -> tuple[object, ...]:
             return (graph_promotion, graph_snapshot)
@@ -254,7 +316,9 @@ def _fake_phase1_provider(dagster: Any) -> object:
             return ()
 
         def get_resources(self) -> dict[str, object]:
-            return {}
+            if failing_resource_key == "neo4j_driver":
+                return {"neo4j_driver": RaisingResource()}
+            return {"neo4j_driver": FakeNeo4jDriverResource()}
 
     return FakePhase1Provider()
 

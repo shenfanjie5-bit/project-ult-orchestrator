@@ -111,6 +111,22 @@ def test_classify_infrastructure_failure_does_not_steal_manifest_repair(
     assert decision.action is GateAction.REPAIR_MANIFEST
 
 
+def test_infrastructure_registry_includes_core_storage_and_graph_backends() -> None:
+    infra = _infra_module()
+
+    assert {
+        "postgres_engine",
+        "iceberg_catalog",
+        "neo4j_driver",
+    } <= infra.CORE_INFRASTRUCTURE_RESOURCE_KEYS
+    assert infra.INFRASTRUCTURE_RESOURCE_PHASES["postgres_engine"] is PhaseEnum.PHASE0
+    assert infra.INFRASTRUCTURE_RESOURCE_PHASES["iceberg_catalog"] is PhaseEnum.PHASE0
+    assert infra.INFRASTRUCTURE_RESOURCE_PHASES["neo4j_driver"] is PhaseEnum.PHASE1
+    assert set(infra.INFRASTRUCTURE_RESOURCE_REGISTRY) == set(
+        infra.CORE_INFRASTRUCTURE_RESOURCE_KEYS,
+    )
+
+
 @pytest.mark.parametrize(
     "surface_name",
     [
@@ -140,6 +156,42 @@ def test_guarded_data_readiness_accepts_supported_signal_surfaces(
     assert observed is signal
     assert getattr(guarded, "missing_optional_signal", "fallback") == "fallback"
     assert not hasattr(guarded, "missing_optional_signal")
+
+
+def test_guarded_no_arg_resource_definition_initializes_normally() -> None:
+    dagster = pytest.importorskip("dagster", reason="dagster is not installed")
+    infra = _infra_module()
+
+    @dagster.resource
+    def no_arg_resource() -> str:
+        return "ok"
+
+    value, finalizers = infra._initialize_resource(no_arg_resource, object())
+
+    assert value == "ok"
+    assert finalizers == ()
+
+
+def test_guarded_resource_definition_preserves_dagster_metadata() -> None:
+    dagster = pytest.importorskip("dagster", reason="dagster is not installed")
+    infra = _infra_module()
+
+    @dagster.resource(
+        required_resource_keys={"postgres_engine"},
+        config_schema={"catalog_name": str},
+    )
+    def iceberg_catalog(context: object) -> str:
+        return str(context.resource_config["catalog_name"])
+
+    guarded = infra.guard_infrastructure_resource(
+        "iceberg_catalog",
+        iceberg_catalog,
+        phase=PhaseEnum.PHASE0,
+        policy_path=str(LITE_POLICY_PATH),
+    )
+
+    assert guarded.required_resource_keys == {"postgres_engine"}
+    assert guarded.config_schema is iceberg_catalog.config_schema
 
 
 def _infra_module() -> Any:
