@@ -1,22 +1,16 @@
 from __future__ import annotations
 
-import ast
 from pathlib import Path
 
 import pytest
 
+from scripts.check_boundaries import scan_orchestrator_boundaries
 from tests.integration.conftest import (
     asset_check_evaluations,
     asset_materialization_keys,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_FORBIDDEN_ROOT_MODULES = (
-    "graph" + "_engine",
-    "main" + "_core",
-    "data" + "_platform",
-    "audit" + "_eval",
-)
 
 
 def test_materialize_phase0_readiness_ping(
@@ -145,35 +139,7 @@ def test_daily_cycle_job_executes_in_process(
 
 
 def test_no_business_imports() -> None:
-    violations: list[str] = []
-
-    for path in sorted((_REPO_ROOT / "src" / "orchestrator").rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for module_name, lineno in _absolute_imports(tree):
-            if _is_forbidden_business_import(module_name):
-                relative_path = path.relative_to(_REPO_ROOT)
-                violations.append(f"{relative_path}:{lineno}: {module_name}")
-
-    assert violations == []
-
-
-def _absolute_imports(tree: ast.AST) -> list[tuple[str, int]]:
-    imports: list[tuple[str, int]] = []
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imports.extend((alias.name, node.lineno) for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            imports.append((node.module, node.lineno))
-
-    return imports
-
-
-def _is_forbidden_business_import(module_name: str) -> bool:
-    return any(
-        module_name == root or module_name.startswith(f"{root}.")
-        for root in _FORBIDDEN_ROOT_MODULES
-    )
+    assert scan_orchestrator_boundaries(_REPO_ROOT) == []
 
 
 def _heartbeat_asset_key(dbt_phase0_assets: object) -> object:
