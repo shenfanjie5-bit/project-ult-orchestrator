@@ -99,6 +99,17 @@ def test_build_definitions_is_loadable(
     )
 
 
+def test_build_definitions_omits_llm_check_without_probe_resource(
+    definitions_exports: dict[str, Any],
+) -> None:
+    build_definitions = definitions_exports["build_definitions"]
+
+    defs = build_definitions(policy_path="config/policy/gate_policy.lite.yaml")
+
+    assert "llm_health_probe" not in defs.resources
+    assert "llm_health_check" not in _check_names(defs)
+
+
 def test_daily_cycle_job_selects_phase0_readiness_ping(
     definitions_exports: dict[str, Any],
 ) -> None:

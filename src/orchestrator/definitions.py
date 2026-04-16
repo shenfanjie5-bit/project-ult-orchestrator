@@ -58,6 +58,9 @@ def build_definitions(
         for module_factory in module_factory_list
         for check in module_factory.get_checks()
     ]
+    builtin_checks = [phase0_ping_check]
+    if "llm_health_probe" in resource_bundle.resource_keys:
+        builtin_checks.append(llm_health_check)
 
     return Definitions(
         assets=[
@@ -66,8 +69,7 @@ def build_definitions(
             *provider_assets,
         ],
         asset_checks=[
-            phase0_ping_check,
-            llm_health_check,
+            *builtin_checks,
             *provider_checks,
         ],
         jobs=[daily_cycle_job],

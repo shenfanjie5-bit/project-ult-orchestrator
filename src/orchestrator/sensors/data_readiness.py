@@ -120,10 +120,29 @@ def _signal_from_resource(resource: object) -> DataReadinessSignal | None:
 
 def _coerce_signal(value: object) -> DataReadinessSignal:
     if isinstance(value, DataReadinessSignal):
-        return value
-    if isinstance(value, Mapping):
-        return DataReadinessSignal(**value)
-    raise TypeError("readiness provider returned an invalid DataReadinessSignal")
+        signal = value
+    elif isinstance(value, Mapping):
+        if "ready" not in value:
+            raise TypeError("readiness signal ready must be bool")
+        if "cycle_id" not in value:
+            raise TypeError("readiness signal cycle_id must be a non-empty string")
+        signal = DataReadinessSignal(**value)
+    else:
+        raise TypeError("readiness provider returned an invalid DataReadinessSignal")
+
+    _validate_signal(signal)
+    return signal
+
+
+def _validate_signal(signal: DataReadinessSignal) -> None:
+    if type(signal.ready) is not bool:
+        raise TypeError("readiness signal ready must be bool")
+    if not isinstance(signal.cycle_id, str) or not signal.cycle_id.strip():
+        raise TypeError("readiness signal cycle_id must be a non-empty string")
+    if not isinstance(signal.failed_node, str) or not signal.failed_node.strip():
+        raise TypeError("readiness signal failed_node must be a non-empty string")
+    if signal.reason is not None and not isinstance(signal.reason, str):
+        raise TypeError("readiness signal reason must be a string or None")
 
 
 def _gate_policy_from_context(context: SensorEvaluationContext) -> GatePolicyProfile:

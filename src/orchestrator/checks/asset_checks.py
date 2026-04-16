@@ -88,9 +88,20 @@ def _read_llm_health(
 ) -> _NormalizedLLMHealthResult:
     check_health = getattr(llm_health_probe, "check_health", None)
     if not callable(check_health):
-        raise TypeError("llm_health_probe resource must expose check_health()")
+        return _unhealthy_probe_result(
+            llm_health_probe,
+            TypeError("llm_health_probe resource must expose check_health()"),
+        )
 
-    return _coerce_llm_health_result(check_health())
+    try:
+        raw_result = check_health()
+    except Exception as exc:
+        return _unhealthy_probe_result(llm_health_probe, exc)
+
+    try:
+        return _coerce_llm_health_result(raw_result)
+    except Exception as exc:
+        return _unhealthy_probe_result(llm_health_probe, exc, raw_result=raw_result)
 
 
 def _coerce_llm_health_result(value: object) -> _NormalizedLLMHealthResult:
@@ -115,6 +126,35 @@ def _coerce_llm_health_result(value: object) -> _NormalizedLLMHealthResult:
         summary=summary,
         provider=provider,
     )
+
+
+def _unhealthy_probe_result(
+    llm_health_probe: LLMHealthProbe,
+    exc: Exception,
+    *,
+    raw_result: object | None = None,
+) -> _NormalizedLLMHealthResult:
+    return _NormalizedLLMHealthResult(
+        healthy=False,
+        summary=f"llm health probe failed: {exc}",
+        provider=_provider_from_probe_or_result(llm_health_probe, raw_result),
+    )
+
+
+def _provider_from_probe_or_result(
+    llm_health_probe: LLMHealthProbe,
+    raw_result: object | None,
+) -> str | None:
+    for value in (raw_result, llm_health_probe):
+        if value is None:
+            continue
+        if isinstance(value, Mapping):
+            provider = value.get("provider")
+        else:
+            provider = getattr(value, "provider", None)
+        if isinstance(provider, str) and provider:
+            return provider
+    return None
 
 
 def _llm_health_metadata(

@@ -58,7 +58,7 @@ def _failure_class_from_event(event: object | None) -> FailureClass | None:
 
 def _coerce_failure_class(value: Any) -> FailureClass | None:
     if value is None:
-        return None
+        raise ValueError("gate event failure_class is required")
     if isinstance(value, FailureClass):
         return value
     if isinstance(value, str):

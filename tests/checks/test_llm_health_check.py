@@ -33,6 +33,13 @@ class _FakeHealthProbe:
         return self._result
 
 
+class _RaisingHealthProbe:
+    provider = "fake-llm"
+
+    def check_health(self) -> object:
+        raise RuntimeError("probe timeout")
+
+
 @pytest.fixture
 def gate_policy_resource() -> object:
     return SimpleNamespace(policy=load_gate_policy(_LITE_POLICY_PATH))
@@ -116,7 +123,33 @@ def test_llm_health_check_dispatches_fail_run_alert(
     assert payload["phase"] == "phase0"
     assert payload["failed_node"] == "llm_health_check"
     assert payload["action"] == "fail_run"
+    assert payload["failure_class"] == "infra"
     assert payload["summary"] == "LLM health check failed; stop before Phase 1."
+
+
+def test_llm_health_check_probe_exception_is_policy_classified(
+    caplog: pytest.LogCaptureFixture,
+    gate_policy_resource: object,
+) -> None:
+    pytest.importorskip("dagster", reason="dagster is not installed")
+
+    from orchestrator.checks.asset_checks import llm_health_check
+
+    with caplog.at_level(logging.WARNING):
+        result = llm_health_check(
+            gate_policy=gate_policy_resource,
+            llm_health_probe=_RaisingHealthProbe(),
+        )
+
+    payload = json.loads(caplog.records[-1].message)
+
+    assert result.passed is False
+    assert result.metadata["provider"] == "fake-llm"
+    assert result.metadata["summary"] == "llm health probe failed: probe timeout"
+    assert result.metadata["failure_class"] == "infra"
+    assert result.metadata["action"] == "fail_run"
+    assert payload["failure_class"] == "infra"
+    assert payload["action"] == "fail_run"
 
 
 def test_llm_health_check_is_dagster_asset_check_definition() -> None:
