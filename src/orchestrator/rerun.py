@@ -141,10 +141,6 @@ def _policy_entry_for_failed_node(
     if len(phase_entries) == 1:
         return phase_entries[0]
 
-    partial_entries = [entry for entry in phase_entries if entry.allow_partial_rerun]
-    if len(partial_entries) == 1:
-        return partial_entries[0]
-
     msg = (
         "failed node requires an explicit failure_class for policy lookup: "
         f"run_id={run_history.run_id} failed_node={failed_node} phase={phase.value}"

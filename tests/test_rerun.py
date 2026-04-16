@@ -1,10 +1,17 @@
 from dataclasses import FrozenInstanceError, fields
 from datetime import datetime, timezone
 from inspect import getsource, signature
+from pathlib import Path
 
 import pytest
 
-from orchestrator.policy import FailureClass, GateAction, GatePolicyProfile, PhaseEnum
+from orchestrator.policy import (
+    FailureClass,
+    GateAction,
+    GatePolicyProfile,
+    PhaseEnum,
+    load_gate_policy,
+)
 from orchestrator.policy.schema import PhaseMatrixEntry
 from orchestrator.rerun import (
     PartialRerunNotAllowed,
@@ -14,6 +21,10 @@ from orchestrator.rerun import (
     compute_partial_rerun_plan,
     plan_partial_rerun,
 )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+LITE_POLICY_PATH = REPO_ROOT / "config" / "policy" / "gate_policy.lite.yaml"
 
 
 def _policy(*entries: PhaseMatrixEntry) -> GatePolicyProfile:
@@ -227,6 +238,63 @@ def test_unknown_failed_node_mentions_run_id_and_node() -> None:
     assert "missing_node" in message
 
 
+def test_run_history_run_id_mismatch_raises() -> None:
+    run_history = RunHistorySnapshot(
+        run_id="snapshot-run",
+        node_to_phase={"phase2_score_AAPL": PhaseEnum.PHASE2},
+        node_dependencies={"phase2_score_AAPL": ()},
+        failed_nodes=("phase2_score_AAPL",),
+        repairable_nodes={},
+        node_failure_classes={"phase2_score_AAPL": FailureClass.TASK_LEVEL},
+    )
+    policy = _policy(
+        _entry(
+            PhaseEnum.PHASE2,
+            FailureClass.TASK_LEVEL,
+            GateAction.PARTIAL_RERUN,
+            allow_partial_rerun=True,
+        )
+    )
+
+    with pytest.raises(
+        PartialRerunNotAllowed,
+        match="requested=requested-run snapshot=snapshot-run",
+    ):
+        compute_partial_rerun_plan(
+            "requested-run",
+            "phase2_score_AAPL",
+            run_history,
+            policy,
+        )
+
+
+def test_node_exists_but_is_not_marked_failed_raises() -> None:
+    run_history = RunHistorySnapshot(
+        run_id="run-not-failed",
+        node_to_phase={"phase2_score_AAPL": PhaseEnum.PHASE2},
+        node_dependencies={"phase2_score_AAPL": ()},
+        failed_nodes=(),
+        repairable_nodes={},
+        node_failure_classes={"phase2_score_AAPL": FailureClass.TASK_LEVEL},
+    )
+    policy = _policy(
+        _entry(
+            PhaseEnum.PHASE2,
+            FailureClass.TASK_LEVEL,
+            GateAction.PARTIAL_RERUN,
+            allow_partial_rerun=True,
+        )
+    )
+
+    with pytest.raises(PartialRerunNotAllowed, match="is not marked failed"):
+        compute_partial_rerun_plan(
+            "run-not-failed",
+            "phase2_score_AAPL",
+            run_history,
+            policy,
+        )
+
+
 def test_policy_not_allowing_partial_rerun_raises() -> None:
     run_history = RunHistorySnapshot(
         run_id="run-denied",
@@ -249,6 +317,94 @@ def test_policy_not_allowing_partial_rerun_raises() -> None:
         compute_partial_rerun_plan(
             "run-denied",
             "phase0_market_data",
+            run_history,
+            policy,
+        )
+
+
+def test_mixed_phase_policy_requires_failure_class() -> None:
+    run_history = RunHistorySnapshot(
+        run_id="run-mixed-policy",
+        node_to_phase={"dbt_phase0_assets": PhaseEnum.PHASE0},
+        node_dependencies={"dbt_phase0_assets": ()},
+        failed_nodes=("dbt_phase0_assets",),
+        repairable_nodes={},
+        node_failure_classes=None,
+    )
+    policy = load_gate_policy(LITE_POLICY_PATH)
+
+    with pytest.raises(
+        PartialRerunNotAllowed,
+        match="requires an explicit failure_class",
+    ):
+        compute_partial_rerun_plan(
+            "run-mixed-policy",
+            "dbt_phase0_assets",
+            run_history,
+            policy,
+        )
+
+
+def test_single_entry_phase_policy_can_infer_missing_failure_class() -> None:
+    run_history = RunHistorySnapshot(
+        run_id="run-single-policy",
+        node_to_phase={"phase2_score_AAPL": PhaseEnum.PHASE2},
+        node_dependencies={"phase2_score_AAPL": ()},
+        failed_nodes=("phase2_score_AAPL",),
+        repairable_nodes={},
+        node_failure_classes=None,
+    )
+    policy = _policy(
+        _entry(
+            PhaseEnum.PHASE2,
+            FailureClass.TASK_LEVEL,
+            GateAction.PARTIAL_RERUN,
+            allow_partial_rerun=True,
+        )
+    )
+
+    plan = compute_partial_rerun_plan(
+        "run-single-policy",
+        "phase2_score_AAPL",
+        run_history,
+        policy,
+    )
+
+    assert plan.rerun_selection == ("phase2_score_AAPL",)
+    assert plan.requires_manual_ack is False
+
+
+def test_ambiguous_multi_entry_phase_policy_requires_failure_class() -> None:
+    run_history = RunHistorySnapshot(
+        run_id="run-ambiguous-policy",
+        node_to_phase={"phase2_score_AAPL": PhaseEnum.PHASE2},
+        node_dependencies={"phase2_score_AAPL": ()},
+        failed_nodes=("phase2_score_AAPL",),
+        repairable_nodes={},
+        node_failure_classes=None,
+    )
+    policy = _policy(
+        _entry(
+            PhaseEnum.PHASE2,
+            FailureClass.TASK_LEVEL,
+            GateAction.PARTIAL_RERUN,
+            allow_partial_rerun=True,
+        ),
+        _entry(
+            PhaseEnum.PHASE2,
+            FailureClass.DATA_QUALITY,
+            GateAction.FAIL_RUN,
+            allow_partial_rerun=False,
+        ),
+    )
+
+    with pytest.raises(
+        PartialRerunNotAllowed,
+        match="requires an explicit failure_class",
+    ):
+        compute_partial_rerun_plan(
+            "run-ambiguous-policy",
+            "phase2_score_AAPL",
             run_history,
             policy,
         )
