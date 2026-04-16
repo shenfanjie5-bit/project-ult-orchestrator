@@ -12,13 +12,13 @@ from typing import Iterator
 from orchestrator.checks.classifier import classify_gate_result
 from orchestrator.checks.decision_handler import dispatch_gate_decision_alert
 from orchestrator.checks.models import GateDecision
-from orchestrator.cli.rerun import DEFAULT_REQUEST_DIR
 from orchestrator.policy import FailureClass, GateAction, GatePolicyProfile, PhaseEnum
 from orchestrator.rerun import (
     PartialRerunPlan,
     RunHistorySnapshot,
     compute_partial_rerun_plan,
 )
+from orchestrator.rerun_request import DEFAULT_REQUEST_DIR, write_rerun_request
 
 _RERUN_REQUEST_DIR_ENV = "ORCHESTRATOR_RERUN_REQUEST_DIR"
 _FAILED_DBT_RESULT_STATUSES = frozenset({"error", "fail"})
@@ -217,36 +217,7 @@ def _write_dbt_rerun_request_if_needed(
 
 
 def _write_rerun_request(plan: PartialRerunPlan, request_dir: Path) -> Path:
-    request_dir.mkdir(parents=True, exist_ok=True)
-    request_path = request_dir / _request_filename(plan.run_id, plan.failed_node)
-    request_path.write_text(
-        json.dumps(_request_from_plan(plan), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    return request_path
-
-
-def _request_from_plan(plan: PartialRerunPlan) -> dict[str, object]:
-    return {
-        "run_id": plan.run_id,
-        "failed_node": plan.failed_node,
-        "rerun_selection": list(plan.rerun_selection),
-        "requires_manual_ack": plan.requires_manual_ack,
-        "rerun_mode": plan.rerun_mode,
-        "generated_at": plan.generated_at.isoformat(),
-    }
-
-
-def _request_filename(run_id: str, failed_node: str) -> str:
-    return f"{_safe_filename_part(run_id)}-{_safe_filename_part(failed_node)}.json"
-
-
-def _safe_filename_part(value: str) -> str:
-    output = "".join(
-        character if character.isalnum() or character in "_.=-" else "_"
-        for character in value
-    ).strip("._")
-    return output or "request"
+    return write_rerun_request(plan, request_dir)
 
 
 def _request_dir(request_dir: str | Path | None) -> Path:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from inspect import signature
 from pathlib import Path
 from types import SimpleNamespace
@@ -283,6 +284,50 @@ def test_rerun_request_write_failure_still_alerts_and_observes(
     )
     assert "rerun request write failed" in str(alert["summary"])
     assert not (tmp_path / "not-a-directory-heartbeat.json").exists()
+
+
+def test_rerun_request_write_is_atomically_published(
+    gate_policy: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import orchestrator.rerun_request as rerun_request
+
+    real_replace = os.replace
+    sensor_visible_files_before_publish: list[Path] = []
+
+    def replace_spy(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        temp_path = Path(src)
+        final_path = Path(dst)
+
+        assert temp_path.parent == tmp_path
+        assert temp_path.suffix == ".tmp"
+        assert final_path == tmp_path / "run-dbt-heartbeat.json"
+
+        sensor_visible_files_before_publish.extend(tmp_path.glob("*.json"))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(rerun_request.os, "replace", replace_spy)
+
+    results = handle_dbt_test_failures(
+        (
+            FakeDbtCheckEvent(
+                asset_key=FakeAssetKey(("heartbeat",)),
+                check_name="not_null_heartbeat_heartbeat",
+            ),
+        ),
+        run_id="run-dbt",
+        cycle_id="cycle-dbt",
+        policy=gate_policy,
+        request_dir=tmp_path,
+    )
+
+    assert results[0].request_path == tmp_path / "run-dbt-heartbeat.json"
+    assert sensor_visible_files_before_publish == []
+    assert not list(tmp_path.glob("*.tmp"))
+    assert json.loads(results[0].request_path.read_text(encoding="utf-8"))[
+        "failed_node"
+    ] == "heartbeat"
 
 
 def test_handle_dbt_test_failures_covers_multiple_failed_assets(
