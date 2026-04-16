@@ -32,6 +32,7 @@ from orchestrator.jobs.phase1 import (
     PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
     PHASE1_GROUP_NAME,
 )
+from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME
 from orchestrator.resources import AssetFactoryProvider, build_resource_bundle
 from orchestrator.schedules import daily_cycle_schedule
 from orchestrator.sensors.data_readiness import (
@@ -77,6 +78,19 @@ _PHASE1_SURFACE_PROFILES = frozenset(
         "p5",
         "p5+",
         "phase1",
+        "phase2",
+        "phase3",
+    }
+)
+_PHASE2_SURFACE_PROFILES = frozenset(
+    {
+        "milestone-2",
+        "milestone-3",
+        "milestone-4",
+        "p2",
+        "p3",
+        "p5",
+        "p5+",
         "phase2",
         "phase3",
     }
@@ -137,22 +151,16 @@ def build_definitions(
         if reserved in resource_bundle.resource_keys:
             raise ValueError(f"duplicate resource key: {reserved}")
 
-    provider_assets = [
-        asset
-        for module_factory in module_factory_list
-        for asset in module_factory.get_assets()
-    ]
+    provider_assets = _collect_provider_assets(module_factory_list)
     _validate_phase0_provider_assets(provider_assets)
     _validate_phase1_provider_assets(provider_assets)
     if _requires_milestone_surface():
         _validate_milestone_surface(provider_assets, resource_bundle.resources)
     if _requires_phase1_surface():
         _validate_phase1_surface(provider_assets)
-    provider_checks = [
-        check
-        for module_factory in module_factory_list
-        for check in module_factory.get_checks()
-    ]
+    if _requires_phase2_surface():
+        _validate_phase2_surface(provider_assets)
+    provider_checks = _collect_provider_checks(module_factory_list)
     builtin_checks = [phase0_ping_check, llm_health_check]
     llm_health_probe_resource = resource_bundle.resources.get(
         _LLM_HEALTH_PROBE_RESOURCE_KEY,
@@ -249,6 +257,26 @@ def _load_configured_module_factory(factory_path: str) -> AssetFactoryProvider:
         )
 
     return resolved
+
+
+def _collect_provider_assets(
+    module_factories: Iterable[AssetFactoryProvider],
+) -> tuple[object, ...]:
+    return tuple(
+        asset
+        for module_factory in module_factories
+        for asset in module_factory.get_assets()
+    )
+
+
+def _collect_provider_checks(
+    module_factories: Iterable[AssetFactoryProvider],
+) -> tuple[object, ...]:
+    return tuple(
+        check
+        for module_factory in module_factories
+        for check in module_factory.get_checks()
+    )
 
 
 def _validate_phase0_provider_assets(provider_assets: Iterable[object]) -> None:
@@ -355,6 +383,10 @@ def _requires_phase1_surface() -> bool:
     return _normalized_definitions_profile() in _PHASE1_SURFACE_PROFILES
 
 
+def _requires_phase2_surface() -> bool:
+    return _normalized_definitions_profile() in _PHASE2_SURFACE_PROFILES
+
+
 def _is_milestone_surface_profile() -> bool:
     return _normalized_definitions_profile() in _MILESTONE_SURFACE_PROFILES
 
@@ -430,6 +462,29 @@ def _validate_phase1_surface(provider_assets: Iterable[object]) -> None:
             "assets that satisfy the graph promotion/snapshot contract. "
             f"Missing: {missing_items}.",
         )
+
+
+def _validate_phase2_surface(provider_assets: Iterable[object]) -> None:
+    phase2_asset_keys = _asset_keys_for_group(provider_assets, PHASE2_GROUP_NAME)
+    if phase2_asset_keys:
+        return
+
+    raise ValueError(
+        "phase2 milestone Definitions assembly requires provider assets "
+        f"declaring group_name={PHASE2_GROUP_NAME!r}.",
+    )
+
+
+def _asset_keys_for_group(
+    provider_assets: Iterable[object],
+    group_name: str,
+) -> frozenset[AssetKey]:
+    return frozenset(
+        asset_key
+        for asset_def in provider_assets
+        for asset_key in getattr(asset_def, "keys", ())
+        if getattr(asset_def, "group_names_by_key", {}).get(asset_key) == group_name
+    )
 
 
 def _asset_dependency_keys(
