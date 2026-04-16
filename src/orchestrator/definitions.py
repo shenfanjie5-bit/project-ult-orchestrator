@@ -17,18 +17,16 @@ from orchestrator.jobs.phase0 import (
     dbt_phase0_assets,
     phase0_readiness_ping,
 )
-from orchestrator.resources import AssetFactoryProvider
-from orchestrator.resources._stub_provider import StubProvider
-from orchestrator.resources.bundle import _collect_resource_definitions
+from orchestrator.resources import AssetFactoryProvider, build_resource_bundle
 from orchestrator.schedules import daily_cycle_schedule
 from orchestrator.sensors import data_readiness_sensor
 
 DEFAULT_POLICY_PATH = "config/policy/gate_policy.lite.yaml"
-_RESERVED_RESOURCE_KEYS = ("gate_policy", "dbt")
+_RESERVED_RESOURCE_KEYS = ("gate_policy", "dbt", "resource_bundle")
 
 
 def build_definitions(
-    module_factories: Iterable[AssetFactoryProvider] | None = None,
+    module_factories: Iterable[AssetFactoryProvider] = (),
     policy_path: str | Path | None = None,
 ) -> Definitions:
     if policy_path is None:
@@ -36,13 +34,11 @@ def build_definitions(
             "ORCHESTRATOR_POLICY_PATH",
             DEFAULT_POLICY_PATH,
         )
-    module_factory_list = (
-        tuple(module_factories) if module_factories is not None else (StubProvider(),)
-    )
+    module_factory_list = tuple(module_factories)
 
-    provider_resources = _collect_resource_definitions(module_factory_list)
+    resource_bundle = build_resource_bundle(str(policy_path), module_factory_list)
     for reserved in _RESERVED_RESOURCE_KEYS:
-        if reserved in provider_resources:
+        if reserved in resource_bundle.resource_keys:
             raise ValueError(f"duplicate resource key: {reserved}")
 
     provider_assets = [
@@ -75,7 +71,8 @@ def build_definitions(
                 project_dir=str(DBT_PROJECT_DIR),
                 profiles_dir=str(DBT_PROFILES_DIR),
             ),
-            **provider_resources,
+            "resource_bundle": resource_bundle,
+            **resource_bundle.resources,
         },
     )
 

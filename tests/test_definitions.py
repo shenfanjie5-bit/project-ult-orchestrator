@@ -1,6 +1,6 @@
 from inspect import signature
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -18,30 +18,51 @@ def definitions_exports() -> dict[str, Any]:
     from orchestrator.definitions import build_definitions
     from orchestrator.jobs.cycle import build_daily_cycle_jobs, daily_cycle_job
     from orchestrator.jobs.phase0 import dbt_phase0_assets, phase0_readiness_ping
+    from orchestrator.resources import ResourceBundle
 
     return {
         "AssetKey": dagster.AssetKey,
         "Definitions": dagster.Definitions,
+        "dagster": dagster,
         "build_daily_cycle_jobs": build_daily_cycle_jobs,
         "build_definitions": build_definitions,
         "daily_cycle_job": daily_cycle_job,
         "dbt_phase0_assets": dbt_phase0_assets,
         "phase0_readiness_ping": phase0_readiness_ping,
+        "ResourceBundle": ResourceBundle,
     }
 
 
 def test_build_definitions_collects_p1a_surface(
     definitions_exports: dict[str, Any],
 ) -> None:
+    AssetKey = definitions_exports["AssetKey"]
+    ResourceBundle = definitions_exports["ResourceBundle"]
     build_definitions = definitions_exports["build_definitions"]
+    dagster = definitions_exports["dagster"]
+    provider = _fake_provider(dagster)
 
-    defs = build_definitions()
+    defs = build_definitions(
+        module_factories=[provider],
+        policy_path="config/policy/gate_policy.lite.yaml",
+    )
 
     assert len(defs.jobs) == 1
     assert len(defs.schedules) == 1
     assert len(defs.sensors) == 1
+    assert AssetKey(["fake_phase0_asset"]) in _asset_keys(defs)
+    assert "fake_phase0_check" in _check_names(defs)
     assert "gate_policy" in defs.resources
-    assert "orchestration_context_stub" in defs.resources
+    assert "resource_bundle" in defs.resources
+    assert "fake_data_platform_resource" in defs.resources
+    assert "orchestration_context_stub" not in defs.resources
+
+    bundle = defs.resources["resource_bundle"]
+    assert isinstance(bundle, ResourceBundle)
+    assert bundle.resource_keys == ("fake_data_platform_resource",)
+    assert bundle.source_modules == (__name__,)
+    assert bundle.config_ref == "config/policy/gate_policy.lite.yaml"
+    assert bundle.read_only is True
 
 
 def test_build_definitions_signature_matches_contract(
@@ -60,8 +81,11 @@ def test_build_definitions_is_loadable(
 ) -> None:
     Definitions = definitions_exports["Definitions"]
     build_definitions = definitions_exports["build_definitions"]
+    dagster = definitions_exports["dagster"]
 
-    Definitions.validate_loadable(build_definitions())
+    Definitions.validate_loadable(
+        build_definitions(module_factories=[_fake_provider(dagster)]),
+    )
 
 
 def test_daily_cycle_job_selects_phase0_readiness_ping(
@@ -108,3 +132,82 @@ def test_provider_cannot_override_reserved_resource_keys(
 
     with pytest.raises(ValueError, match="duplicate resource key: dbt"):
         build_definitions(module_factories=[DbtOverrideProvider()])
+
+
+def test_duplicate_provider_resource_key_raises_value_error(
+    definitions_exports: dict[str, Any],
+) -> None:
+    build_definitions = definitions_exports["build_definitions"]
+
+    class DuplicateResourceProvider:
+        def get_assets(self) -> tuple[object, ...]:
+            return ()
+
+        def get_checks(self) -> tuple[object, ...]:
+            return ()
+
+        def get_resources(self) -> dict[str, object]:
+            return {"duplicate_data_platform_resource": object()}
+
+    with pytest.raises(
+        ValueError,
+        match="duplicate resource key: duplicate_data_platform_resource",
+    ):
+        build_definitions(
+            module_factories=[
+                DuplicateResourceProvider(),
+                DuplicateResourceProvider(),
+            ],
+        )
+
+
+def _fake_provider(dagster: Any) -> object:
+    class FakeDataPlatformResource(dagster.ConfigurableResource):
+        def create_resource(self, context: object) -> dict[str, str]:
+            return {"status": "ok"}
+
+    @dagster.asset(name="fake_phase0_asset", group_name="phase0")
+    def fake_phase0_asset() -> str:
+        return "ok"
+
+    @dagster.asset_check(asset=fake_phase0_asset, name="fake_phase0_check")
+    def fake_phase0_check() -> object:
+        return dagster.AssetCheckResult(passed=True)
+
+    class FakeDataPlatformProvider:
+        def get_assets(self) -> tuple[object, ...]:
+            return (fake_phase0_asset,)
+
+        def get_checks(self) -> tuple[object, ...]:
+            return (fake_phase0_check,)
+
+        def get_resources(self) -> dict[str, object]:
+            return {
+                "fake_data_platform_resource": cast(
+                    object,
+                    FakeDataPlatformResource(),
+                )
+            }
+
+    return FakeDataPlatformProvider()
+
+
+def _asset_keys(defs: Any) -> set[object]:
+    return {
+        asset_key
+        for asset_def in defs.assets or ()
+        for asset_key in getattr(asset_def, "keys", ())
+    }
+
+
+def _check_names(defs: Any) -> set[str]:
+    names: set[str] = set()
+    for check_def in defs.asset_checks or ():
+        names.update(
+            check_key.name
+            for check_key in getattr(check_def, "check_keys", ())
+        )
+        names.update(spec.name for spec in getattr(check_def, "specs", ()))
+        if name := getattr(check_def, "name", None):
+            names.add(name)
+    return names
