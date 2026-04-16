@@ -181,6 +181,34 @@ def test_phase3_provider_requires_publish_manifest_asset(
         )
 
 
+@pytest.mark.parametrize("profile", ["milestone-2", "p2"])
+def test_milestone2_profiles_require_phase3_publish_surface(
+    dagster_module: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+) -> None:
+    dagster = dagster_module
+
+    from orchestrator.definitions import build_definitions
+
+    monkeypatch.setenv("ORCHESTRATOR_DEFINITIONS_PROFILE", profile)
+
+    with pytest.raises(
+        ValueError,
+        match="phase3.*formal_objects_commit.*cycle_publish_manifest",
+    ):
+        build_definitions(
+            module_factories=[
+                _fake_phase0_surface_provider(dagster),
+                _fake_phase1_provider(dagster),
+                _fake_phase2_provider(dagster),
+            ],
+            policy_path=stub_policy_path,
+        )
+
+
 def _fake_phase0_surface_provider(dagster: Any) -> object:
     from orchestrator.checks import DataReadinessSignal
     from orchestrator.jobs.phase0_constants import (
@@ -239,24 +267,32 @@ def _fake_phase1_provider(dagster: Any) -> object:
         PHASE0_READINESS_ASSET_KEY,
     )
     from orchestrator.jobs.phase1 import (
+        PHASE1_GRAPH_PROMOTION_ASSET_KEY,
         PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
         PHASE1_GROUP_NAME,
     )
 
     @dagster.asset(
-        name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+        name=PHASE1_GRAPH_PROMOTION_ASSET_KEY,
         group_name=PHASE1_GROUP_NAME,
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
         ],
     )
-    def graph_snapshot() -> str:
-        return "snapshot"
+    def graph_promotion() -> str:
+        return "promoted"
+
+    @dagster.asset(
+        name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+        group_name=PHASE1_GROUP_NAME,
+    )
+    def graph_snapshot(graph_promotion: str) -> str:
+        return f"snapshot:{graph_promotion}"
 
     class FakePhase1Provider:
         def get_assets(self) -> tuple[object, ...]:
-            return (graph_snapshot,)
+            return (graph_promotion, graph_snapshot)
 
         def get_checks(self) -> tuple[object, ...]:
             return ()
