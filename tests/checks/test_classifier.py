@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import dataclass, fields
+from inspect import signature
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,11 @@ from orchestrator.policy import FailureClass, GateAction, PhaseEnum, load_gate_p
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LITE_POLICY_PATH = REPO_ROOT / "config" / "policy" / "gate_policy.lite.yaml"
+
+
+@dataclass(frozen=True, slots=True)
+class GateEvent:
+    failure_class: FailureClass | str | None
 
 
 @pytest.fixture
@@ -40,6 +46,14 @@ def test_gate_decision_fields_match_runtime_model() -> None:
     ]
 
 
+def test_classify_gate_result_signature_matches_contract() -> None:
+    assert list(signature(classify_gate_result).parameters) == [
+        "phase",
+        "event",
+        "policy",
+    ]
+
+
 def test_classify_phase0_without_failure_continues(gate_policy: Any) -> None:
     decision = classify_gate_result(PhaseEnum.PHASE0, None, gate_policy)
 
@@ -53,7 +67,7 @@ def test_classify_phase0_without_failure_continues(gate_policy: Any) -> None:
 def test_classify_phase0_infra_fails_run(gate_policy: Any) -> None:
     decision = classify_gate_result(
         PhaseEnum.PHASE0,
-        FailureClass.INFRA,
+        GateEvent(failure_class=FailureClass.INFRA),
         gate_policy,
     )
 
@@ -66,7 +80,7 @@ def test_classify_phase0_infra_fails_run(gate_policy: Any) -> None:
 def test_classify_phase2_task_level_marks_inconclusive(gate_policy: Any) -> None:
     decision = classify_gate_result(
         PhaseEnum.PHASE2,
-        FailureClass.TASK_LEVEL,
+        {"failure_class": FailureClass.TASK_LEVEL},
         gate_policy,
     )
 
@@ -82,7 +96,7 @@ def test_classify_phase2_task_level_marks_inconclusive(gate_policy: Any) -> None
 def test_classify_phase3_infra_repairs_manifest(gate_policy: Any) -> None:
     decision = classify_gate_result(
         PhaseEnum.PHASE3,
-        FailureClass.INFRA,
+        GateEvent(failure_class="infra"),
         gate_policy,
     )
 
@@ -94,7 +108,16 @@ def test_unknown_policy_combination_raises(gate_policy: Any) -> None:
         UnknownGateFailure,
         match="phase=phase1 failure_class=infra",
     ):
-        classify_gate_result(PhaseEnum.PHASE1, FailureClass.INFRA, gate_policy)
+        classify_gate_result(
+            PhaseEnum.PHASE1,
+            GateEvent(failure_class=FailureClass.INFRA),
+            gate_policy,
+        )
+
+
+def test_classify_rejects_non_event_failure_class(gate_policy: Any) -> None:
+    with pytest.raises(TypeError, match="gate event must expose failure_class"):
+        classify_gate_result(PhaseEnum.PHASE0, FailureClass.INFRA, gate_policy)
 
 
 def test_duplicate_phase_matrix_entries_are_rejected(tmp_path: Path) -> None:

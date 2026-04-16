@@ -1,3 +1,4 @@
+from inspect import signature
 from pathlib import Path
 from typing import Any
 
@@ -15,12 +16,13 @@ def definitions_exports() -> dict[str, Any]:
         pytest.skip("dbt manifest is not compiled; run make dbt-compile")
 
     from orchestrator.definitions import build_definitions
-    from orchestrator.jobs.cycle import daily_cycle_job
+    from orchestrator.jobs.cycle import build_daily_cycle_jobs, daily_cycle_job
     from orchestrator.jobs.phase0 import dbt_phase0_assets, phase0_readiness_ping
 
     return {
         "AssetKey": dagster.AssetKey,
         "Definitions": dagster.Definitions,
+        "build_daily_cycle_jobs": build_daily_cycle_jobs,
         "build_definitions": build_definitions,
         "daily_cycle_job": daily_cycle_job,
         "dbt_phase0_assets": dbt_phase0_assets,
@@ -40,6 +42,17 @@ def test_build_definitions_collects_p1a_surface(
     assert len(defs.sensors) == 1
     assert "gate_policy" in defs.resources
     assert "orchestration_context_stub" in defs.resources
+
+
+def test_build_definitions_signature_matches_contract(
+    definitions_exports: dict[str, Any],
+) -> None:
+    build_definitions = definitions_exports["build_definitions"]
+
+    assert list(signature(build_definitions).parameters) == [
+        "module_factories",
+        "policy_path",
+    ]
 
 
 def test_build_definitions_is_loadable(
@@ -66,6 +79,18 @@ def test_daily_cycle_job_selects_phase0_readiness_ping(
     assert AssetKey(["phase0_readiness_ping"]) in selected_keys
 
 
+def test_build_daily_cycle_jobs_signature_and_p1a_job(
+    definitions_exports: dict[str, Any],
+) -> None:
+    build_daily_cycle_jobs = definitions_exports["build_daily_cycle_jobs"]
+    daily_cycle_job = definitions_exports["daily_cycle_job"]
+
+    assert list(signature(build_daily_cycle_jobs).parameters) == ["phase_config"]
+    assert build_daily_cycle_jobs({"enabled_phases": ["phase0"]}) == (
+        daily_cycle_job,
+    )
+
+
 def test_provider_cannot_override_reserved_resource_keys(
     definitions_exports: dict[str, Any],
 ) -> None:
@@ -82,4 +107,4 @@ def test_provider_cannot_override_reserved_resource_keys(
             return {"dbt": object()}
 
     with pytest.raises(ValueError, match="duplicate resource key: dbt"):
-        build_definitions(providers=[DbtOverrideProvider()])
+        build_definitions(module_factories=[DbtOverrideProvider()])

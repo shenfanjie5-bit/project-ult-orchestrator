@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
+from pathlib import Path
 
 from dagster import Definitions
 from dagster_dbt import DbtCliResource
@@ -16,8 +17,9 @@ from orchestrator.jobs.phase0 import (
     dbt_phase0_assets,
     phase0_readiness_ping,
 )
-from orchestrator.resources import AssetFactoryProvider, build_resource_bundle
+from orchestrator.resources import AssetFactoryProvider
 from orchestrator.resources._stub_provider import StubProvider
+from orchestrator.resources.bundle import _collect_resource_definitions
 from orchestrator.schedules import daily_cycle_schedule
 from orchestrator.sensors import data_readiness_sensor
 
@@ -26,30 +28,32 @@ _RESERVED_RESOURCE_KEYS = ("gate_policy", "dbt")
 
 
 def build_definitions(
-    policy_path: str | None = None,
-    providers: Iterable[AssetFactoryProvider] | None = None,
+    module_factories: Iterable[AssetFactoryProvider] | None = None,
+    policy_path: str | Path | None = None,
 ) -> Definitions:
     if policy_path is None:
         policy_path = os.environ.get(
             "ORCHESTRATOR_POLICY_PATH",
             DEFAULT_POLICY_PATH,
         )
-    provider_list = tuple(providers) if providers is not None else (StubProvider(),)
+    module_factory_list = (
+        tuple(module_factories) if module_factories is not None else (StubProvider(),)
+    )
 
-    provider_resources = build_resource_bundle(policy_path, provider_list)
+    provider_resources = _collect_resource_definitions(module_factory_list)
     for reserved in _RESERVED_RESOURCE_KEYS:
         if reserved in provider_resources:
             raise ValueError(f"duplicate resource key: {reserved}")
 
     provider_assets = [
         asset
-        for provider in provider_list
-        for asset in provider.get_assets()
+        for module_factory in module_factory_list
+        for asset in module_factory.get_assets()
     ]
     provider_checks = [
         check
-        for provider in provider_list
-        for check in provider.get_checks()
+        for module_factory in module_factory_list
+        for check in module_factory.get_checks()
     ]
 
     return Definitions(
@@ -66,7 +70,7 @@ def build_definitions(
         schedules=[daily_cycle_schedule],
         sensors=[data_readiness_sensor],
         resources={
-            "gate_policy": GatePolicyResource(policy_path=policy_path),
+            "gate_policy": GatePolicyResource(policy_path=str(policy_path)),
             "dbt": DbtCliResource(
                 project_dir=str(DBT_PROJECT_DIR),
                 profiles_dir=str(DBT_PROFILES_DIR),

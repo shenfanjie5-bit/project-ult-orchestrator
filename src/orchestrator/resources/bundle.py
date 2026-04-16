@@ -1,8 +1,9 @@
 """Resource bundle assembly for Dagster definitions."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import FrozenInstanceError, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any
 
 from orchestrator.resources.providers import AssetFactoryProvider, ResourceDefinition
 
@@ -27,15 +28,61 @@ class ResourceBundle:
 
 
 def build_resource_bundle(
-    config_ref: str,
-    providers: Iterable[AssetFactoryProvider],
+    env_config: Mapping[str, Any] | str | None,
+    module_factories: Iterable[AssetFactoryProvider],
+) -> ResourceBundle:
+    module_factory_list = tuple(module_factories)
+    resources = _collect_resource_definitions(module_factory_list)
+    return _resource_bundle_from(
+        env_config=env_config,
+        module_factories=module_factory_list,
+        resource_keys=tuple(resources),
+    )
+
+
+def _collect_resource_definitions(
+    module_factories: Iterable[AssetFactoryProvider],
 ) -> dict[str, ResourceDefinition]:
     resources: dict[str, ResourceDefinition] = {}
 
-    for provider in providers:
-        for key, resource in provider.get_resources().items():
+    for module_factory in module_factories:
+        for key, resource in module_factory.get_resources().items():
             if key in resources:
                 raise ValueError(f"duplicate resource key: {key}")
             resources[key] = resource
 
     return resources
+
+
+def _resource_bundle_from(
+    env_config: Mapping[str, Any] | str | None,
+    module_factories: Iterable[AssetFactoryProvider],
+    resource_keys: tuple[str, ...],
+) -> ResourceBundle:
+    return ResourceBundle(
+        resource_keys=resource_keys,
+        source_modules=_source_modules(module_factories),
+        config_ref=_config_ref(env_config),
+        injected_at=datetime.now(timezone.utc),
+        read_only=True,
+    )
+
+
+def _source_modules(
+    module_factories: Iterable[AssetFactoryProvider],
+) -> tuple[str, ...]:
+    modules: dict[str, None] = {}
+    for module_factory in module_factories:
+        modules[module_factory.__class__.__module__] = None
+    return tuple(modules)
+
+
+def _config_ref(env_config: Mapping[str, Any] | str | None) -> str:
+    if env_config is None:
+        return "default"
+    if isinstance(env_config, str):
+        return env_config
+    for key in ("config_ref", "environment", "env", "name"):
+        if key in env_config:
+            return str(env_config[key])
+    return "inline-env-config"
