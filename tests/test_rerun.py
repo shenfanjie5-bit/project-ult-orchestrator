@@ -28,7 +28,7 @@ LITE_POLICY_PATH = REPO_ROOT / "config" / "policy" / "gate_policy.lite.yaml"
 
 
 def _policy(*entries: PhaseMatrixEntry) -> GatePolicyProfile:
-    return GatePolicyProfile(
+    return GatePolicyProfile.model_construct(
         policy_version="test",
         contract_version="stub-0.1",
         execution_backend="dagster_only",
@@ -46,8 +46,14 @@ def _entry(
     *,
     allow_partial_rerun: bool,
     rerun_mode: str | None = None,
+    scenario_id: str | None = None,
 ) -> PhaseMatrixEntry:
+    default_scenario_id = (
+        f"test_{phase.value}_{failure_class.value}_"
+        f"{action.value}_{rerun_mode or 'default'}"
+    )
     return PhaseMatrixEntry(
+        scenario_id=scenario_id or default_scenario_id,
         phase=phase,
         failure_class=failure_class,
         action=action,

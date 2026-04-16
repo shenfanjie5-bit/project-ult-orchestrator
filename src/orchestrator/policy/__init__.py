@@ -7,7 +7,10 @@ from orchestrator.policy.contracts_adapter import (
     PhaseEnum,
 )
 from orchestrator.policy.loader import load_gate_policy
-from orchestrator.policy.schema import GatePolicyProfile
+from orchestrator.policy.schema import (
+    REQUIRED_GATE_MATRIX_SCENARIOS,
+    GatePolicyProfile,
+)
 
 __all__ = [
     "CONTRACTS_VERSION",
@@ -15,5 +18,6 @@ __all__ = [
     "GatePolicyProfile",
     "GateAction",
     "PhaseEnum",
+    "REQUIRED_GATE_MATRIX_SCENARIOS",
     "load_gate_policy",
 ]
