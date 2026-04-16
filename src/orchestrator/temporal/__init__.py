@@ -18,6 +18,7 @@ from orchestrator.temporal.handoff import (
     start_temporal_handoff,
 )
 from orchestrator.temporal.phase_specs import default_phase1_3_specs
+from orchestrator.temporal.parity import CycleParitySnapshot
 from orchestrator.temporal.workflow import (
     TemporalPhaseExecutor,
     phase_result_should_continue,
@@ -26,6 +27,7 @@ from orchestrator.temporal.workflow import (
 
 __all__ = [
     "DefaultTemporalHandoffClient",
+    "CycleParitySnapshot",
     "TEMPORAL_HANDOFF_CLIENT_RESOURCE_KEY",
     "TemporalCycleRequest",
     "TemporalCycleResult",
