@@ -112,6 +112,36 @@ def test_classify_phase2_single_stock_failure_requires_tolerance(
         classify_phase2_single_stock_failure(event, policy)
 
 
+@pytest.mark.parametrize("tolerance", [float("nan"), float("inf"), float("-inf")])
+def test_classify_phase2_single_stock_failure_rejects_non_finite_tolerance(
+    gate_policy: Any,
+    tolerance: float,
+) -> None:
+    policy = gate_policy.model_copy(
+        update={
+            "thresholds": {
+                **gate_policy.thresholds,
+                "phase2_single_stock_tolerance": tolerance,
+            },
+        },
+    )
+    event = Phase2SingleStockFailureEvent(
+        stock_id="AAPL",
+        failed_node="phase2_llm_score_AAPL",
+        failed_count=1,
+        total_count=10,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "thresholds.phase2_single_stock_tolerance "
+            "must be finite and between 0 and 1"
+        ),
+    ):
+        classify_phase2_single_stock_failure(event, policy)
+
+
 def test_classify_phase2_single_stock_failure_rejects_pool_threshold_case(
     gate_policy: Any,
 ) -> None:

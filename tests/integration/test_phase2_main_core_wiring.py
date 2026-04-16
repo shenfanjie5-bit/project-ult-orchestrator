@@ -47,6 +47,7 @@ def test_phase2_provider_contributes_daily_cycle_assets_and_checks(
 
     assert phase2_asset_keys <= selected_keys
     assert _asset_keys_for_group(defs, PHASE2_GROUP_NAME) == phase2_asset_keys
+    assert "phase2_pool_failure_rate_gate" in _check_names(defs)
     assert "fake_phase2_l7_pure_check" in _check_names(defs)
 
     result = defs.get_job_def("daily_cycle_job").execute_in_process(
@@ -61,6 +62,11 @@ def test_phase2_provider_contributes_daily_cycle_assets_and_checks(
     assert phase2_calls == list(PHASE2_STAGE_KEYS)
     assert any(
         _check_name(evaluation) == "fake_phase2_l7_pure_check"
+        and getattr(evaluation, "passed", None) is True
+        for evaluation in evaluations
+    )
+    assert any(
+        _check_name(evaluation) == "phase2_pool_failure_rate_gate"
         and getattr(evaluation, "passed", None) is True
         for evaluation in evaluations
     )
@@ -203,6 +209,10 @@ def _fake_phase2_provider(
     dagster: Any,
     calls: list[str],
 ) -> tuple[object, tuple[object, ...], object]:
+    from orchestrator.checks import (
+        PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY,
+        Phase2PoolFailureRateEvent,
+    )
     from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME, PHASE2_STAGE_KEYS
 
     @dagster.asset(name=PHASE2_STAGE_KEYS[0], group_name=PHASE2_GROUP_NAME)
@@ -257,6 +267,16 @@ def _fake_phase2_provider(
         phase2_l7,
     )
 
+    class FakePhase2PoolFailureRateResource(dagster.ConfigurableResource):
+        def get_phase2_pool_failure_rate_event(
+            self,
+        ) -> Phase2PoolFailureRateEvent:
+            return Phase2PoolFailureRateEvent(
+                failed_count=0,
+                total_count=10,
+                failed_nodes=(),
+            )
+
     class FakePhase2Provider:
         def get_assets(self) -> tuple[object, ...]:
             return phase2_assets
@@ -265,7 +285,11 @@ def _fake_phase2_provider(
             return (fake_phase2_l7_pure_check,)
 
         def get_resources(self) -> dict[str, object]:
-            return {}
+            return {
+                PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY: (
+                    FakePhase2PoolFailureRateResource()
+                ),
+            }
 
     return FakePhase2Provider(), phase2_assets, fake_phase2_l7_pure_check
 
