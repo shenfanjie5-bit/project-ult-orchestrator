@@ -116,3 +116,6 @@ def test_manifest_write_failure_alert_payload_contains_repair_action(
     assert payload["failure_class"] == "infra"
     assert payload["action"] == "repair_manifest"
     assert payload["failed_node"] == PHASE3_MANIFEST_ASSET_KEY
+    assert payload["runbook_url"] == (
+        "docs/RUNBOOK_P5.md#phase3-infra-repair_manifest"
+    )

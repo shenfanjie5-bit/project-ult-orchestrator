@@ -255,6 +255,9 @@ def test_stream_dbt_events_handles_failed_check_with_alert_and_request(
     assert alert["failed_node"] == "heartbeat"
     assert alert["action"] == "partial_rerun"
     assert alert["failure_class"] == "task_level"
+    assert alert["runbook_url"] == (
+        "docs/RUNBOOK_P5.md#phase0-task_level-partial_rerun"
+    )
 
 
 def test_rerun_request_write_failure_still_alerts_and_observes(

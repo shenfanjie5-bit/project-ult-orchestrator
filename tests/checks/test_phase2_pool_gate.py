@@ -165,6 +165,9 @@ def test_dispatch_phase2_pool_failure_alert_logs_shared_payload(
     assert payload["summary"] == (
         "Phase 2 pool failure rate 0.4 (4/10): fake pool failures"
     )
+    assert payload["runbook_url"] == (
+        "docs/RUNBOOK_P5.md#phase2-data_quality-fail_run"
+    )
 
 
 def test_dispatch_phase2_pool_failure_alert_skips_continue(
