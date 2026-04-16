@@ -1,6 +1,39 @@
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
 from typing import Any
 
 import pytest
+
+from orchestrator.checks import DataReadinessSignal
+from orchestrator.policy import FailureClass, GateAction, PhaseEnum, load_gate_policy
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LITE_POLICY_PATH = REPO_ROOT / "config" / "policy" / "gate_policy.lite.yaml"
+
+
+class FakeReadinessResource:
+    def __init__(self, signal: DataReadinessSignal) -> None:
+        self.signal = signal
+
+    def get_data_readiness_signal(self) -> DataReadinessSignal:
+        return self.signal
+
+
+class FakeGatePolicyResource:
+    def __init__(self) -> None:
+        self.policy = load_gate_policy(LITE_POLICY_PATH)
+
+
+def _alert_payloads(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    for record in caplog.records:
+        if record.name != "orchestrator.alerting.dispatcher":
+            continue
+        payloads.append(json.loads(record.message))
+    return payloads
 
 
 @pytest.fixture
@@ -11,21 +44,98 @@ def sensor_exports() -> dict[str, Any]:
 
     return {
         "Definitions": dagster.Definitions,
+        "RunRequest": dagster.RunRequest,
         "SkipReason": dagster.SkipReason,
+        "build_sensor_context": dagster.build_sensor_context,
         "data_readiness_sensor": data_readiness_sensor,
     }
 
 
-def test_data_readiness_sensor_skips_until_milestone_1(
+def test_data_readiness_sensor_ready_returns_run_request(
+    sensor_exports: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    RunRequest = sensor_exports["RunRequest"]
+    build_sensor_context = sensor_exports["build_sensor_context"]
+    data_readiness_sensor = sensor_exports["data_readiness_sensor"]
+    signal = DataReadinessSignal(ready=True, cycle_id="cycle-20260416")
+    context = build_sensor_context(
+        resources={
+            "data_readiness": FakeReadinessResource(signal),
+            "gate_policy": FakeGatePolicyResource(),
+        },
+    )
+
+    with caplog.at_level(logging.WARNING):
+        result = data_readiness_sensor.evaluation_fn(context)
+
+    assert isinstance(result, RunRequest)
+    assert result.run_key == "cycle-20260416"
+    assert result.run_config == {}
+    assert result.tags["cycle_id"] == "cycle-20260416"
+    assert result.tags["phase"] == "phase0"
+    assert _alert_payloads(caplog) == []
+
+
+def test_data_readiness_sensor_not_ready_returns_skip_reason(
     sensor_exports: dict[str, Any],
 ) -> None:
-    data_readiness_sensor = sensor_exports["data_readiness_sensor"]
     SkipReason = sensor_exports["SkipReason"]
+    build_sensor_context = sensor_exports["build_sensor_context"]
+    data_readiness_sensor = sensor_exports["data_readiness_sensor"]
+    signal = DataReadinessSignal(
+        ready=False,
+        cycle_id="cycle-20260416",
+        reason="market data delayed",
+    )
+    context = build_sensor_context(
+        resources={
+            "data_readiness": FakeReadinessResource(signal),
+            "gate_policy": FakeGatePolicyResource(),
+        },
+    )
 
-    result = data_readiness_sensor.evaluation_fn()
+    result = data_readiness_sensor.evaluation_fn(context)
 
     assert isinstance(result, SkipReason)
-    assert "milestone-1" in result.skip_message
+    assert "market data delayed" in result.skip_message
+
+
+def test_data_readiness_sensor_not_ready_dispatches_policy_alert(
+    sensor_exports: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    build_sensor_context = sensor_exports["build_sensor_context"]
+    data_readiness_sensor = sensor_exports["data_readiness_sensor"]
+    gate_policy = FakeGatePolicyResource().policy
+    first_policy_row = gate_policy.phase_matrix[0]
+    signal = DataReadinessSignal(
+        ready=False,
+        cycle_id="cycle-20260416",
+        reason="market data delayed",
+    )
+    context = build_sensor_context(
+        resources={
+            "data_readiness": FakeReadinessResource(signal),
+            "gate_policy": FakeGatePolicyResource(),
+        },
+    )
+
+    assert first_policy_row.phase is PhaseEnum.PHASE0
+    assert first_policy_row.failure_class is FailureClass.DATA_QUALITY
+    assert first_policy_row.action is GateAction.FAIL_RUN
+
+    with caplog.at_level(logging.WARNING):
+        data_readiness_sensor.evaluation_fn(context)
+
+    payload = _alert_payloads(caplog)[-1]
+
+    assert payload["cycle_id"] == "cycle-20260416"
+    assert payload["phase"] == "phase0"
+    assert payload["status"] == "failed"
+    assert payload["failed_node"] == "data_readiness"
+    assert payload["action"] == "fail_run"
+    assert payload["summary"] == first_policy_row.description
 
 
 def test_data_readiness_sensor_name(sensor_exports: dict[str, Any]) -> None:

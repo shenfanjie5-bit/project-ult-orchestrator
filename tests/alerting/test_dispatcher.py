@@ -48,6 +48,27 @@ def test_dispatch_alert_unknown_channel_warns_without_raising(
     assert caplog.records[-1].message == "unknown alert channel: unknown"
 
 
+def test_dispatch_alert_ops_channel_uses_logging_backend(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    payload = AlertPayload(
+        cycle_id="c1",
+        phase="phase0",
+        status="failed",
+        failed_node="phase0_readiness_ping",
+        action="fail_run",
+        summary="test",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        dispatch_alert(payload, channels=("ops",))
+
+    logged_payload = json.loads(caplog.records[-1].message)
+
+    assert logged_payload["cycle_id"] == "c1"
+    assert logged_payload["action"] == "fail_run"
+
+
 def test_alert_payload_optional_fields_allow_none() -> None:
     payload = AlertPayload(
         cycle_id="c1",
