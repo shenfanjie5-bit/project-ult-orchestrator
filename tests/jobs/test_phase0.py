@@ -19,15 +19,30 @@ def asset_key_type() -> Any:
 
 
 @pytest.fixture
-def phase0_readiness_ping_asset() -> Any:
+def phase0_module() -> Any:
     pytest.importorskip("dagster", reason="dagster is not installed")
     pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
     if not _DBT_MANIFEST_PATH.exists():
         pytest.skip("dbt manifest is not compiled; run make dbt-compile")
 
-    from orchestrator.jobs import phase0_readiness_ping
+    from orchestrator.jobs import phase0
+
+    return phase0
+
+
+@pytest.fixture
+def phase0_readiness_ping_asset(phase0_module: Any) -> Any:
+    phase0_readiness_ping = phase0_module.phase0_readiness_ping
 
     return phase0_readiness_ping
+
+
+def test_phase0_group_constants(phase0_module: Any) -> None:
+    assert phase0_module.PHASE0_GROUP_NAME == "phase0"
+    assert phase0_module.PHASE0_REQUIRED_ASSET_KEYS == (
+        "phase0_readiness_ping",
+        "candidate_freeze",
+    )
 
 
 def test_phase0_readiness_ping_asset_exists(
