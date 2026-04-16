@@ -152,6 +152,54 @@ def test_audit_eval_hook_without_manifest_dependency_is_rejected(
         )
 
 
+@pytest.mark.parametrize("profile", ["milestone-2", "p2"])
+def test_milestone2_profiles_require_retrospective_hook_surface(
+    dagster_module: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    profile: str,
+) -> None:
+    dagster = dagster_module
+
+    from orchestrator.definitions import build_definitions
+
+    monkeypatch.setenv("ORCHESTRATOR_DEFINITIONS_PROFILE", profile)
+
+    with pytest.raises(ValueError, match="audit_eval.*retrospective_hook"):
+        build_definitions(
+            module_factories=[
+                _fake_phase0_surface_provider(dagster),
+                _fake_phase1_provider(dagster),
+                _fake_phase2_provider(dagster),
+                _fake_phase3_provider(dagster, phase3_calls=[]),
+            ],
+            policy_path=stub_policy_path,
+        )
+
+
+def test_audit_eval_provider_without_retrospective_hook_is_rejected(
+    dagster_module: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
+
+    from orchestrator.definitions import build_definitions
+
+    with pytest.raises(ValueError, match="audit_eval.*retrospective_hook"):
+        build_definitions(
+            module_factories=[
+                _fake_phase0_surface_provider(dagster),
+                _fake_phase1_provider(dagster),
+                _fake_phase2_provider(dagster),
+                _fake_phase3_provider(dagster, phase3_calls=[]),
+                _fake_non_hook_audit_eval_provider(dagster),
+            ],
+            policy_path=stub_policy_path,
+        )
+
+
 def _fake_audit_eval_provider(
     dagster: Any,
     audit_calls: list[str],
@@ -202,6 +250,26 @@ def _fake_audit_eval_provider(
             return {"fake_audit_eval_resource": FakeAuditEvalResource()}
 
     return FakeAuditEvalProvider()
+
+
+def _fake_non_hook_audit_eval_provider(dagster: Any) -> object:
+    from orchestrator.jobs.audit import AUDIT_EVAL_GROUP_NAME
+
+    @dagster.asset(name="audit_summary", group_name=AUDIT_EVAL_GROUP_NAME)
+    def audit_summary(cycle_publish_manifest: str) -> str:
+        return f"{cycle_publish_manifest}:audit-summary"
+
+    class FakeNonHookAuditEvalProvider:
+        def get_assets(self) -> tuple[object, ...]:
+            return (audit_summary,)
+
+        def get_checks(self) -> tuple[object, ...]:
+            return ()
+
+        def get_resources(self) -> dict[str, object]:
+            return {}
+
+    return FakeNonHookAuditEvalProvider()
 
 
 def _fake_phase3_manifest_failure_provider(
