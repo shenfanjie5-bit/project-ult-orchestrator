@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import json
+import logging
 from inspect import signature
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from orchestrator.checks.dbt_events import (
     classify_dbt_test_failure,
+    handle_dbt_test_failures,
     plan_dbt_test_partial_rerun,
+    stream_dbt_events_with_gate_handling,
 )
 from orchestrator.policy import FailureClass, GateAction, PhaseEnum, load_gate_policy
 from orchestrator.rerun import PartialRerunNotAllowed
@@ -28,6 +33,43 @@ class FakeAssetKey:
 
 class MissingMetadataEvent:
     pass
+
+
+class FakeDbtCheckEvent:
+    def __init__(
+        self,
+        *,
+        asset_key: object,
+        check_name: str,
+        unique_id: str | None = None,
+    ) -> None:
+        self.passed = False
+        self.asset_key = asset_key
+        self.check_name = check_name
+        self.metadata = {}
+        if unique_id is not None:
+            self.metadata["unique_id"] = unique_id
+
+
+class FakeDbtInvocation:
+    def __init__(
+        self,
+        events: tuple[object, ...],
+        *,
+        artifacts: dict[str, object] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._events = events
+        self._artifacts = artifacts or {}
+        self._error = error
+
+    def stream(self) -> Any:
+        yield from self._events
+        if self._error is not None:
+            raise self._error
+
+    def get_artifact(self, name: str) -> object | None:
+        return self._artifacts.get(name)
 
 
 @pytest.fixture
@@ -168,6 +210,143 @@ def test_classify_dbt_test_failure_requires_event(gate_policy: Any) -> None:
         classify_dbt_test_failure(None, gate_policy)
 
 
+def test_stream_dbt_events_handles_failed_check_with_alert_and_request(
+    gate_policy: Any,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    failed_check = FakeDbtCheckEvent(
+        asset_key=FakeAssetKey(("heartbeat",)),
+        check_name="not_null_heartbeat_heartbeat",
+        unique_id="test.orchestrator_stub.not_null_heartbeat_heartbeat",
+    )
+    invocation = FakeDbtInvocation((failed_check,))
+    context = _fake_context(run_id="run-dbt", cycle_id="cycle-dbt")
+
+    with caplog.at_level(logging.WARNING):
+        emitted_events = list(
+            stream_dbt_events_with_gate_handling(
+                context=context,
+                dbt_invocation=invocation,
+                policy=gate_policy,
+                request_dir=tmp_path,
+            ),
+        )
+
+    observation = emitted_events[-1]
+    request = json.loads((tmp_path / "run-dbt-heartbeat.json").read_text())
+    alert = _alert_payloads(caplog)[-1]
+
+    assert emitted_events[0] is failed_check
+    assert _observation_asset_key(observation) == "heartbeat"
+    assert _observation_metadata_value(observation, "action") == "partial_rerun"
+    assert _observation_metadata_value(observation, "failure_class") == "task_level"
+    assert _observation_metadata_value(observation, "failed_node") == "heartbeat"
+    assert request["run_id"] == "run-dbt"
+    assert request["failed_node"] == "heartbeat"
+    assert request["rerun_selection"] == ["heartbeat"]
+    assert request["rerun_mode"] == "asset_only"
+    assert alert["cycle_id"] == "cycle-dbt"
+    assert alert["failed_node"] == "heartbeat"
+    assert alert["action"] == "partial_rerun"
+    assert alert["failure_class"] == "task_level"
+
+
+def test_rerun_request_write_failure_still_alerts_and_observes(
+    gate_policy: Any,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request_dir = tmp_path / "not-a-directory"
+    request_dir.write_text("already a file", encoding="utf-8")
+    failed_check = FakeDbtCheckEvent(
+        asset_key=FakeAssetKey(("heartbeat",)),
+        check_name="not_null_heartbeat_heartbeat",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        emitted_events = list(
+            stream_dbt_events_with_gate_handling(
+                context=_fake_context(run_id="run-dbt", cycle_id="cycle-dbt"),
+                dbt_invocation=FakeDbtInvocation((failed_check,)),
+                policy=gate_policy,
+                request_dir=request_dir,
+            ),
+        )
+
+    observation = emitted_events[-1]
+    alert = _alert_payloads(caplog)[-1]
+
+    assert _observation_metadata_value(observation, "action") == "partial_rerun"
+    assert "File exists" in str(
+        _observation_metadata_value(observation, "rerun_request_write_error"),
+    )
+    assert "rerun request write failed" in str(alert["summary"])
+    assert not (tmp_path / "not-a-directory-heartbeat.json").exists()
+
+
+def test_handle_dbt_test_failures_covers_multiple_failed_assets(
+    gate_policy: Any,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    first = FakeDbtCheckEvent(
+        asset_key=FakeAssetKey(("heartbeat",)),
+        check_name="not_null_heartbeat_heartbeat",
+    )
+    second = FakeDbtCheckEvent(
+        asset_key=FakeAssetKey(("orders",)),
+        check_name="not_null_orders_order_id",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        results = handle_dbt_test_failures(
+            (first, second),
+            run_id="run-dbt",
+            cycle_id="cycle-dbt",
+            policy=gate_policy,
+            request_dir=tmp_path,
+        )
+
+    request_files = sorted(path.name for path in tmp_path.glob("*.json"))
+    alerts = _alert_payloads(caplog)
+
+    assert [result.event.asset_key for result in results] == ["heartbeat", "orders"]
+    assert request_files == [
+        "run-dbt-heartbeat.json",
+        "run-dbt-orders.json",
+    ]
+    assert [alert["failed_node"] for alert in alerts[-2:]] == ["heartbeat", "orders"]
+
+
+def test_stream_dbt_events_uses_failed_artifacts_before_reraising(
+    gate_policy: Any,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    invocation = FakeDbtInvocation(
+        (),
+        artifacts=_failed_dbt_artifacts(),
+        error=RuntimeError("dbt build failed"),
+    )
+    events = stream_dbt_events_with_gate_handling(
+        context=_fake_context(run_id="run-dbt", cycle_id="cycle-dbt"),
+        dbt_invocation=invocation,
+        policy=gate_policy,
+        request_dir=tmp_path,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        observation = next(events)
+        with pytest.raises(RuntimeError, match="dbt build failed"):
+            next(events)
+
+    assert _observation_asset_key(observation) == "heartbeat"
+    assert _observation_metadata_value(observation, "action") == "partial_rerun"
+    assert (tmp_path / "run-dbt-heartbeat.json").exists()
+    assert _alert_payloads(caplog)[-1]["failed_node"] == "heartbeat"
+
+
 def _with_phase0_task_partial_allowed(
     policy: Any,
     *,
@@ -188,3 +367,66 @@ def _with_phase0_task_partial_allowed(
             ],
         },
     )
+
+
+def _fake_context(run_id: str, cycle_id: str) -> object:
+    return SimpleNamespace(
+        run_id=run_id,
+        run=SimpleNamespace(tags={"cycle_id": cycle_id}),
+    )
+
+
+def _failed_dbt_artifacts() -> dict[str, object]:
+    test_unique_id = "test.orchestrator_stub.not_null_heartbeat_heartbeat"
+    model_unique_id = "model.orchestrator_stub.heartbeat"
+    return {
+        "run_results.json": {
+            "results": [
+                {
+                    "status": "fail",
+                    "unique_id": test_unique_id,
+                },
+            ],
+        },
+        "manifest.json": {
+            "nodes": {
+                test_unique_id: {
+                    "name": "not_null_heartbeat_heartbeat",
+                    "resource_type": "test",
+                    "depends_on": {"nodes": [model_unique_id]},
+                },
+                model_unique_id: {
+                    "name": "heartbeat",
+                    "resource_type": "model",
+                },
+            },
+        },
+    }
+
+
+def _alert_payloads(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    for record in caplog.records:
+        if record.name != "orchestrator.alerting.dispatcher":
+            continue
+        payloads.append(json.loads(record.message))
+    return payloads
+
+
+def _observation_asset_key(observation: object) -> str:
+    asset_key = getattr(observation, "asset_key")
+    if isinstance(asset_key, str):
+        return asset_key
+    to_user_string = getattr(asset_key, "to_user_string", None)
+    if callable(to_user_string):
+        return to_user_string()
+    path = getattr(asset_key, "path", None)
+    if isinstance(path, (list, tuple)):
+        return "/".join(str(part) for part in path)
+    return str(asset_key)
+
+
+def _observation_metadata_value(observation: object, key: str) -> object:
+    metadata = getattr(observation, "metadata", {}) or {}
+    value = metadata[key]
+    return getattr(value, "value", getattr(value, "text", value))
