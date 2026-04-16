@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from collections.abc import Sequence
-from pathlib import Path
-from typing import Any
 
-from orchestrator.rerun import PartialRerunPlan, plan_partial_rerun
-
-DEFAULT_REQUEST_DIR = ".orchestrator/rerun_requests"
+from orchestrator.rerun import plan_partial_rerun
+from orchestrator.rerun_request import (
+    DEFAULT_REQUEST_DIR,
+    request_from_plan,
+    write_rerun_request,
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -27,19 +27,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"failed to plan partial rerun: {exc}", file=sys.stderr)
         return 2
 
-    request = _request_from_plan(plan)
+    request = request_from_plan(plan)
     if args.dry_run:
         print(json.dumps(request, sort_keys=True))
         return 0
 
-    request_dir = Path(args.request_dir)
-    request_path = request_dir / _request_filename(plan.run_id, plan.failed_node)
     try:
-        request_dir.mkdir(parents=True, exist_ok=True)
-        request_path.write_text(
-            json.dumps(request, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        request_path = write_rerun_request(plan, args.request_dir)
     except OSError as exc:
         print(f"failed to write rerun request: {exc}", file=sys.stderr)
         return 1
@@ -67,28 +61,5 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     return parser
 
-
-def _request_from_plan(plan: PartialRerunPlan) -> dict[str, Any]:
-    return {
-        "run_id": plan.run_id,
-        "failed_node": plan.failed_node,
-        "rerun_selection": list(plan.rerun_selection),
-        "requires_manual_ack": plan.requires_manual_ack,
-        "rerun_mode": plan.rerun_mode,
-        "generated_at": plan.generated_at.isoformat(),
-    }
-
-
-def _request_filename(run_id: str, failed_node: str) -> str:
-    safe_run_id = _safe_filename_part(run_id)
-    safe_failed_node = _safe_filename_part(failed_node)
-    return f"{safe_run_id}-{safe_failed_node}.json"
-
-
-def _safe_filename_part(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.=-]+", "_", value).strip("._") or "request"
-
-
 if __name__ == "__main__":
     raise SystemExit(main())
-

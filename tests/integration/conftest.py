@@ -117,6 +117,12 @@ def require_integration_module(module_name: str, package_name: str) -> ModuleTyp
             "install the project dev dependencies before running this target. "
             f"Original import error: {exc}",
         )
+    except Exception as exc:
+        pytest.skip(
+            f"{package_name} could not be imported for tests/integration; "
+            "install a compatible integration toolchain before running this target. "
+            f"Original import error: {type(exc).__name__}: {exc}",
+        )
 
 
 def asset_materialization_keys(result: object) -> set[object]:

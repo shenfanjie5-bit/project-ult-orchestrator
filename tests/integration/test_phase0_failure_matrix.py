@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from orchestrator.checks.dbt_events import (
 )
 from orchestrator.policy import FailureClass, GateAction, PhaseEnum, load_gate_policy
 from tests.integration.conftest import (
+    _clear_phase0_imports,
     asset_check_evaluations,
     asset_materialization_keys,
     metadata_value,
@@ -176,6 +178,83 @@ def test_dbt_test_failure_matrix_plans_only_failed_dbt_asset_group(
     assert "candidate_freeze" not in plan.rerun_selection
 
 
+def test_dbt_test_failure_dagster_run_emits_gate_alert_observation_and_request(
+    dagster_module: object,
+    dagster_dbt_module: object,
+    dagster_instance: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    dagster = dagster_module
+    dagster_dbt = dagster_dbt_module
+    failing_project = tmp_path / "failing_dbt_project"
+    request_dir = tmp_path / "rerun_requests"
+    shutil.copytree(tmp_dbt_project, failing_project)
+    (failing_project / "models" / "phase0" / "heartbeat.sql").write_text(
+        "select null as heartbeat\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ORCHESTRATOR_DBT_PROJECT_DIR", str(failing_project))
+    monkeypatch.setenv("ORCHESTRATOR_RERUN_REQUEST_DIR", str(request_dir))
+    _clear_phase0_imports()
+
+    try:
+        from orchestrator.checks.resources import GatePolicyResource
+        from orchestrator.jobs.phase0 import (
+            DBT_PROFILES_DIR,
+            DBT_PROJECT_DIR,
+            dbt_phase0_assets,
+        )
+
+        failed_asset_key = _heartbeat_asset_key(dbt_phase0_assets)
+        job = dagster.define_asset_job(
+            "failing_dbt_phase0_job",
+            selection=dagster.AssetSelection.assets(failed_asset_key),
+        )
+        defs = dagster.Definitions(
+            assets=[dbt_phase0_assets],
+            jobs=[job],
+            resources={
+                "gate_policy": GatePolicyResource(policy_path=stub_policy_path),
+                "dbt": dagster_dbt.DbtCliResource(
+                    project_dir=str(DBT_PROJECT_DIR),
+                    profiles_dir=str(DBT_PROFILES_DIR),
+                ),
+            },
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = defs.get_job_def("failing_dbt_phase0_job").execute_in_process(
+                instance=dagster_instance,
+                raise_on_error=False,
+            )
+    finally:
+        _clear_phase0_imports()
+
+    failed_node = failed_asset_key.to_user_string()
+    observations = _asset_observations(result)
+    gate_observation = _gate_observation_for_asset(observations, failed_node)
+    request_files = tuple(request_dir.glob("*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text(encoding="utf-8"))
+    alert = _alert_payloads(caplog)[-1]
+
+    assert result.success is False
+    assert metadata_value(gate_observation, "action") == "partial_rerun"
+    assert metadata_value(gate_observation, "failure_class") == "task_level"
+    assert metadata_value(gate_observation, "failed_node") == failed_node
+    assert request["run_id"] == result.run_id
+    assert request["failed_node"] == failed_node
+    assert request["rerun_selection"] == [failed_node]
+    assert request["rerun_mode"] == "asset_only"
+    assert alert["failed_node"] == failed_node
+    assert alert["action"] == "partial_rerun"
+    assert alert["failure_class"] == "task_level"
+
+
 def test_manual_rerun_request_sensor_minimal_happy_path(
     dagster_module: object,
     tmp_path: Path,
@@ -248,6 +327,51 @@ def _asset_selection_strings(asset_selection: object) -> list[str]:
             continue
         output.append(str(asset_key))
     return output
+
+
+def _asset_observations(result: object) -> list[object]:
+    observations: list[object] = []
+    for event in getattr(result, "all_events", ()):
+        if not (
+            getattr(event, "is_asset_observation", False)
+            or getattr(event, "event_type_value", None) == "ASSET_OBSERVATION"
+        ):
+            continue
+
+        event_specific_data = getattr(event, "event_specific_data", None)
+        observation = getattr(event_specific_data, "asset_observation", None)
+        if observation is None:
+            observation = getattr(event_specific_data, "observation", None)
+        if observation is None:
+            observation = getattr(event, "asset_observation", None)
+        if observation is not None:
+            observations.append(observation)
+    return observations
+
+
+def _gate_observation_for_asset(
+    observations: list[object],
+    asset_key: str,
+) -> object:
+    for observation in observations:
+        if _asset_key_string(getattr(observation, "asset_key", None)) != asset_key:
+            continue
+        metadata = getattr(observation, "metadata", {}) or {}
+        if "action" in metadata and "failure_class" in metadata:
+            return observation
+    pytest.fail(f"missing dbt gate observation for {asset_key}")
+
+
+def _asset_key_string(asset_key: object) -> str:
+    if isinstance(asset_key, str):
+        return asset_key
+    to_user_string = getattr(asset_key, "to_user_string", None)
+    if callable(to_user_string):
+        return to_user_string()
+    path = getattr(asset_key, "path", None)
+    if isinstance(path, (list, tuple)):
+        return "/".join(str(part) for part in path)
+    return str(asset_key)
 
 
 def _heartbeat_asset_key(dbt_phase0_assets: object) -> object:
