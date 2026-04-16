@@ -1,4 +1,4 @@
-.PHONY: install test integration-test lint dagster-dev dbt-compile
+.PHONY: install test integration-test lint boundary-check dagster-dev dbt-compile
 
 install:
 	python3 -m pip install -e ".[dev]"
@@ -11,6 +11,9 @@ integration-test:
 
 lint:
 	python3 -m mypy src tests
+
+boundary-check:
+	python3 scripts/check_boundaries.py
 
 dagster-dev:
 	DAGSTER_HOME=./dagster_home dagster dev -m orchestrator.definitions
