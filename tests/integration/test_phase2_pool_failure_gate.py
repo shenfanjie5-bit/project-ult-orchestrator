@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,11 +14,14 @@ from tests.integration.conftest import (
     metadata_value,
 )
 
+_DOWNSTREAM_PUBLISH_ASSET_KEY = "phase2_downstream_publish"
 
-def test_phase2_pool_failure_rate_gate_blocks_phase3_and_alerts(
+
+def test_daily_cycle_phase2_pool_failure_rate_gate_fails_and_alerts(
     dagster_module: object,
     dagster_instance: object,
     stub_policy_path: str,
+    tmp_dbt_project: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     dagster = dagster_module
@@ -29,9 +33,10 @@ def test_phase2_pool_failure_rate_gate_blocks_phase3_and_alerts(
         failed_nodes=("phase2_stock_AAPL", "phase2_stock_MSFT"),
     )
     dagster.Definitions.validate_loadable(defs)
+    assert "phase2_pool_failure_rate_gate" in _definition_check_names(defs)
 
     with caplog.at_level(logging.WARNING, logger="orchestrator.alerting.dispatcher"):
-        result = defs.get_job_def("phase2_pool_gate_job").execute_in_process(
+        result = defs.get_job_def("daily_cycle_job").execute_in_process(
             instance=dagster_instance,
             raise_on_error=False,
             tags={"cycle_id": "cycle-20260416"},
@@ -45,8 +50,8 @@ def test_phase2_pool_failure_rate_gate_blocks_phase3_and_alerts(
     payloads = _alert_payloads(caplog.records)
 
     assert result.success is False
-    assert dagster.AssetKey(["phase2_pool"]) in materialized_keys
-    assert dagster.AssetKey(["phase3_publish"]) not in materialized_keys
+    assert dagster.AssetKey(["l7"]) in materialized_keys
+    assert dagster.AssetKey([_DOWNSTREAM_PUBLISH_ASSET_KEY]) not in materialized_keys
     assert getattr(evaluation, "passed", None) is False
     assert metadata_value(evaluation, "action") == "fail_run"
     assert metadata_value(evaluation, "failure_rate") == 0.4
@@ -64,10 +69,11 @@ def test_phase2_pool_failure_rate_gate_blocks_phase3_and_alerts(
     ]
 
 
-def test_phase2_pool_failure_rate_gate_allows_phase3_without_alert(
+def test_daily_cycle_phase2_pool_failure_rate_gate_allows_without_alert(
     dagster_module: object,
     dagster_instance: object,
     stub_policy_path: str,
+    tmp_dbt_project: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     dagster = dagster_module
@@ -79,9 +85,10 @@ def test_phase2_pool_failure_rate_gate_allows_phase3_without_alert(
         failed_nodes=("phase2_stock_AAPL",),
     )
     dagster.Definitions.validate_loadable(defs)
+    assert "phase2_pool_failure_rate_gate" in _definition_check_names(defs)
 
     with caplog.at_level(logging.WARNING, logger="orchestrator.alerting.dispatcher"):
-        result = defs.get_job_def("phase2_pool_gate_job").execute_in_process(
+        result = defs.get_job_def("daily_cycle_job").execute_in_process(
             instance=dagster_instance,
             raise_on_error=False,
             tags={"cycle_id": "cycle-20260416"},
@@ -94,8 +101,8 @@ def test_phase2_pool_failure_rate_gate_allows_phase3_without_alert(
     )
 
     assert result.success is True
-    assert dagster.AssetKey(["phase2_pool"]) in materialized_keys
-    assert dagster.AssetKey(["phase3_publish"]) in materialized_keys
+    assert dagster.AssetKey(["l7"]) in materialized_keys
+    assert dagster.AssetKey([_DOWNSTREAM_PUBLISH_ASSET_KEY]) in materialized_keys
     assert getattr(evaluation, "passed", None) is True
     assert metadata_value(evaluation, "action") == "continue"
     assert _alert_payloads(caplog.records) == []
@@ -109,28 +116,51 @@ def _build_defs(
     total_count: int,
     failed_nodes: tuple[str, ...],
 ) -> object:
-    from orchestrator.checks import (
-        Phase2PoolFailureRateEvent,
-        classify_phase2_pool_failure_rate,
-        dispatch_phase2_pool_failure_alert,
-        phase2_failure_rate,
+    from orchestrator.definitions import build_definitions
+
+    return build_definitions(
+        module_factories=[
+            _fake_phase0_surface_provider(dagster),
+            _fake_phase1_provider(dagster),
+            _fake_phase2_provider(
+                dagster,
+                failed_count=failed_count,
+                total_count=total_count,
+                failed_nodes=failed_nodes,
+            ),
+        ],
+        policy_path=stub_policy_path,
     )
-    from orchestrator.checks.resources import GatePolicyResource
+
+
+def _fake_phase0_surface_provider(dagster: Any) -> object:
+    from orchestrator.checks import DataReadinessSignal
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
         PHASE0_GROUP_NAME,
-        PHASE0_READINESS_ASSET_KEY,
     )
-    from orchestrator.jobs.phase1 import (
-        PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
-        PHASE1_GROUP_NAME,
-    )
-    from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME
-    from orchestrator.policy import GateAction
+    from orchestrator.sensors.data_readiness import DATA_READINESS_RESOURCE_KEY
 
-    @dagster.asset(name=PHASE0_READINESS_ASSET_KEY, group_name=PHASE0_GROUP_NAME)
-    def phase0_readiness_ping() -> str:
-        return "ready"
+    class FakeDataReadinessProvider:
+        def get_data_readiness_signal(self) -> DataReadinessSignal:
+            return DataReadinessSignal(ready=True, cycle_id="cycle-20260416")
+
+    class FakeDataReadinessResource(dagster.ConfigurableResource):
+        def create_resource(self, context: object) -> FakeDataReadinessProvider:
+            return FakeDataReadinessProvider()
+
+    class FakeLLMHealthResult:
+        healthy = True
+        summary = "provider ready"
+        provider = "fake-llm"
+
+    class FakeLLMHealthProbe:
+        def check_health(self) -> FakeLLMHealthResult:
+            return FakeLLMHealthResult()
+
+    class FakeLLMHealthProbeResource(dagster.ConfigurableResource):
+        def create_resource(self, context: object) -> FakeLLMHealthProbe:
+            return FakeLLMHealthProbe()
 
     @dagster.asset(
         name=PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
@@ -139,102 +169,149 @@ def _build_defs(
     def candidate_freeze() -> str:
         return "frozen"
 
+    class FakePhase0SurfaceProvider:
+        def get_assets(self) -> tuple[object, ...]:
+            return (candidate_freeze,)
+
+        def get_checks(self) -> tuple[object, ...]:
+            return ()
+
+        def get_resources(self) -> dict[str, object]:
+            return {
+                DATA_READINESS_RESOURCE_KEY: FakeDataReadinessResource(),
+                "llm_health_probe": FakeLLMHealthProbeResource(),
+            }
+
+    return FakePhase0SurfaceProvider()
+
+
+def _fake_phase1_provider(dagster: Any) -> object:
+    from orchestrator.jobs.phase0_constants import (
+        PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_READINESS_ASSET_KEY,
+    )
+    from orchestrator.jobs.phase1 import (
+        PHASE1_GRAPH_PROMOTION_ASSET_KEY,
+        PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+        PHASE1_GROUP_NAME,
+    )
+
     @dagster.asset(
-        name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+        name=PHASE1_GRAPH_PROMOTION_ASSET_KEY,
         group_name=PHASE1_GROUP_NAME,
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
         ],
     )
-    def graph_snapshot() -> str:
-        return "snapshot"
+    def graph_promotion() -> str:
+        return "promoted"
 
     @dagster.asset(
-        name="phase2_pool",
-        group_name=PHASE2_GROUP_NAME,
-        deps=[dagster.AssetKey([PHASE1_GRAPH_SNAPSHOT_ASSET_KEY])],
+        name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+        group_name=PHASE1_GROUP_NAME,
     )
-    def phase2_pool() -> str:
-        return "pool placeholder"
+    def graph_snapshot(graph_promotion: str) -> str:
+        return f"snapshot:{graph_promotion}"
 
-    @dagster.asset(
-        name="phase3_publish",
-        group_name="phase3",
-        deps=[dagster.AssetKey(["phase2_pool"])],
+    class FakePhase1Provider:
+        def get_assets(self) -> tuple[object, ...]:
+            return (
+                graph_promotion,
+                graph_snapshot,
+            )
+
+        def get_checks(self) -> tuple[object, ...]:
+            return ()
+
+        def get_resources(self) -> dict[str, object]:
+            return {}
+
+    return FakePhase1Provider()
+
+
+def _fake_phase2_provider(
+    dagster: Any,
+    *,
+    failed_count: int,
+    total_count: int,
+    failed_nodes: tuple[str, ...],
+) -> object:
+    from orchestrator.checks import (
+        PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY,
+        Phase2PoolFailureRateEvent,
     )
-    def phase3_publish() -> str:
-        return "published"
+    from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME, PHASE2_STAGE_KEYS
 
-    @dagster.asset_check(
-        asset=phase2_pool,
-        name="phase2_pool_failure_rate_gate",
-        blocking=True,
+    @dagster.asset(name=PHASE2_STAGE_KEYS[0], group_name=PHASE2_GROUP_NAME)
+    def phase2_l1(graph_snapshot: str) -> str:
+        return f"{graph_snapshot}:l1"
+
+    @dagster.asset(name=PHASE2_STAGE_KEYS[1], group_name=PHASE2_GROUP_NAME)
+    def phase2_l2(l1: str) -> str:
+        return f"{l1}:l2"
+
+    @dagster.asset(name=PHASE2_STAGE_KEYS[2], group_name=PHASE2_GROUP_NAME)
+    def phase2_l3(l2: str) -> str:
+        return f"{l2}:l3"
+
+    @dagster.asset(name=PHASE2_STAGE_KEYS[3], group_name=PHASE2_GROUP_NAME)
+    def phase2_l4(l3: str) -> str:
+        return f"{l3}:l4"
+
+    @dagster.asset(name=PHASE2_STAGE_KEYS[4], group_name=PHASE2_GROUP_NAME)
+    def phase2_l5(l4: str) -> str:
+        return f"{l4}:l5"
+
+    @dagster.asset(name=PHASE2_STAGE_KEYS[5], group_name=PHASE2_GROUP_NAME)
+    def phase2_l6(l5: str) -> str:
+        return f"{l5}:l6"
+
+    @dagster.asset(name=PHASE2_STAGE_KEYS[6], group_name=PHASE2_GROUP_NAME)
+    def phase2_l7(l6: str) -> str:
+        return f"{l6}:l7"
+
+    @dagster.asset(name=_DOWNSTREAM_PUBLISH_ASSET_KEY, group_name=PHASE2_GROUP_NAME)
+    def phase2_downstream_publish(l7: str) -> str:
+        return f"{l7}:published"
+
+    class FakePhase2PoolFailureRateResource(dagster.ConfigurableResource):
+        def get_phase2_pool_failure_rate_event(
+            self,
+        ) -> Phase2PoolFailureRateEvent:
+            return Phase2PoolFailureRateEvent(
+                failed_count=failed_count,
+                total_count=total_count,
+                failed_nodes=failed_nodes,
+                reason="fake pool failures",
+            )
+
+    phase2_assets = (
+        phase2_l1,
+        phase2_l2,
+        phase2_l3,
+        phase2_l4,
+        phase2_l5,
+        phase2_l6,
+        phase2_l7,
+        phase2_downstream_publish,
     )
-    def phase2_pool_failure_rate_gate(
-        context: object,
-        gate_policy: GatePolicyResource,
-    ) -> object:
-        event = Phase2PoolFailureRateEvent(
-            failed_count=failed_count,
-            total_count=total_count,
-            failed_nodes=failed_nodes,
-            reason="fake pool failures",
-        )
-        decision = classify_phase2_pool_failure_rate(event, gate_policy.policy)
-        dispatch_phase2_pool_failure_alert(
-            decision,
-            event,
-            cycle_id=_cycle_id_from_context(context),
-            channels=gate_policy.policy.alert_channels,
-        )
 
-        return dagster.AssetCheckResult(
-            passed=decision.action is GateAction.CONTINUE,
-            metadata={
-                "phase": decision.phase.value,
-                "failure_class": (
-                    decision.failure_class.value if decision.failure_class else ""
+    class FakePhase2Provider:
+        def get_assets(self) -> tuple[object, ...]:
+            return phase2_assets
+
+        def get_checks(self) -> tuple[object, ...]:
+            return ()
+
+        def get_resources(self) -> dict[str, object]:
+            return {
+                PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY: (
+                    FakePhase2PoolFailureRateResource()
                 ),
-                "action": decision.action.value,
-                "failed_count": event.failed_count,
-                "total_count": event.total_count,
-                "failure_rate": phase2_failure_rate(
-                    event.failed_count,
-                    event.total_count,
-                ),
-                "failed_nodes": ", ".join(event.failed_nodes),
-            },
-        )
+            }
 
-    phase2_pool_gate_job = dagster.define_asset_job(
-        name="phase2_pool_gate_job",
-        selection=dagster.AssetSelection.all(),
-    )
-
-    return dagster.Definitions(
-        assets=[
-            phase0_readiness_ping,
-            candidate_freeze,
-            graph_snapshot,
-            phase2_pool,
-            phase3_publish,
-        ],
-        asset_checks=[phase2_pool_failure_rate_gate],
-        jobs=[phase2_pool_gate_job],
-        resources={
-            "gate_policy": GatePolicyResource(policy_path=stub_policy_path),
-        },
-    )
-
-
-def _cycle_id_from_context(context: object) -> str:
-    dagster_run = getattr(context, "dagster_run", None)
-    if dagster_run is None:
-        dagster_run = getattr(context, "run", None)
-    tags = getattr(dagster_run, "tags", {}) or {}
-    cycle_id = tags.get("cycle_id")
-    return cycle_id if isinstance(cycle_id, str) else "unknown"
+    return FakePhase2Provider()
 
 
 def _single_evaluation(evaluations: list[object], check_name: str) -> object:
@@ -254,6 +331,19 @@ def _check_name(evaluation: object) -> str | None:
     check_key = getattr(evaluation, "check_key", None)
     name = getattr(check_key, "name", None)
     return name if isinstance(name, str) else None
+
+
+def _definition_check_names(defs: object) -> set[str]:
+    names: set[str] = set()
+    for check_def in getattr(defs, "asset_checks", ()) or ():
+        names.update(
+            check_key.name
+            for check_key in getattr(check_def, "check_keys", ())
+        )
+        names.update(spec.name for spec in getattr(check_def, "specs", ()))
+        if name := getattr(check_def, "name", None):
+            names.add(name)
+    return names
 
 
 def _alert_payloads(records: Iterable[logging.LogRecord]) -> list[dict[str, object]]:

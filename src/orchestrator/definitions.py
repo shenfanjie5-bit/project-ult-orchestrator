@@ -17,6 +17,10 @@ from orchestrator.checks import (
     llm_health_check,
     phase0_ping_check,
 )
+from orchestrator.checks.phase2 import (
+    PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY,
+    build_phase2_pool_failure_rate_check,
+)
 from orchestrator.jobs.cycle import daily_cycle_job
 from orchestrator.jobs.phase0 import (
     DBT_PROFILES_DIR,
@@ -32,7 +36,7 @@ from orchestrator.jobs.phase1 import (
     PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
     PHASE1_GROUP_NAME,
 )
-from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME
+from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME, PHASE2_STAGE_KEYS
 from orchestrator.resources import AssetFactoryProvider, build_resource_bundle
 from orchestrator.schedules import daily_cycle_schedule
 from orchestrator.sensors.data_readiness import (
@@ -161,7 +165,15 @@ def build_definitions(
     if _requires_phase2_surface():
         _validate_phase2_surface(provider_assets)
     provider_checks = _collect_provider_checks(module_factory_list)
-    builtin_checks = [phase0_ping_check, llm_health_check]
+    phase2_builtin_checks = _build_phase2_builtin_checks(
+        provider_assets,
+        resource_bundle.resources,
+    )
+    builtin_checks = [
+        phase0_ping_check,
+        llm_health_check,
+        *phase2_builtin_checks,
+    ]
     llm_health_probe_resource = resource_bundle.resources.get(
         _LLM_HEALTH_PROBE_RESOURCE_KEY,
         _FailClosedLLMHealthProbeResource(),
@@ -472,6 +484,46 @@ def _validate_phase2_surface(provider_assets: Iterable[object]) -> None:
     raise ValueError(
         "phase2 milestone Definitions assembly requires provider assets "
         f"declaring group_name={PHASE2_GROUP_NAME!r}.",
+    )
+
+
+def _build_phase2_builtin_checks(
+    provider_assets: Iterable[object],
+    provider_resources: Mapping[str, object],
+) -> tuple[object, ...]:
+    phase2_asset_key = _phase2_pool_gate_asset_key(provider_assets)
+    if phase2_asset_key is None:
+        return ()
+
+    if PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY not in provider_resources:
+        raise ValueError(
+            "phase2 provider assets require a "
+            f"{PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY!r} resource so the "
+            "production phase2_pool_failure_rate_gate can evaluate before "
+            "daily_cycle_job advances downstream.",
+        )
+
+    return (build_phase2_pool_failure_rate_check(phase2_asset_key),)
+
+
+def _phase2_pool_gate_asset_key(
+    provider_assets: Iterable[object],
+) -> AssetKey | None:
+    phase2_asset_keys = _asset_keys_for_group(provider_assets, PHASE2_GROUP_NAME)
+    if not phase2_asset_keys:
+        return None
+
+    final_stage_key = AssetKey([PHASE2_STAGE_KEYS[-1]])
+    if final_stage_key in phase2_asset_keys:
+        return final_stage_key
+
+    if len(phase2_asset_keys) == 1:
+        return next(iter(phase2_asset_keys))
+
+    raise ValueError(
+        "phase2 pool failure rate gate requires the final Phase 2 contract "
+        f"asset {final_stage_key.to_user_string()!r}, or exactly one "
+        f"group_name={PHASE2_GROUP_NAME!r} asset.",
     )
 
 
