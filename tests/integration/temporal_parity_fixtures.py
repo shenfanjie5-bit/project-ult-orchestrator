@@ -62,6 +62,57 @@ _PHASES = (
 )
 _RERUN_REQUEST_DIR_ENV = "ORCHESTRATOR_RERUN_REQUEST_DIR"
 _MANIFEST_REPAIR_ASSET_KEY_ENV = "ORCHESTRATOR_MANIFEST_REPAIR_ASSET_KEY"
+_PHASE_TERMINAL_ASSETS = {
+    PhaseEnum.PHASE0: PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+    PhaseEnum.PHASE1: PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+    PhaseEnum.PHASE2: PHASE2_STAGE_KEYS[-1],
+    PhaseEnum.PHASE3: PHASE3_MANIFEST_ASSET_KEY,
+}
+_PHASE_ASSET_NAMES = {
+    PhaseEnum.PHASE0: frozenset(
+        {
+            PHASE0_READINESS_ASSET_KEY,
+            PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+            "heartbeat",
+        }
+    ),
+    PhaseEnum.PHASE1: frozenset(
+        {
+            PHASE1_GRAPH_PROMOTION_ASSET_KEY,
+            PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+        }
+    ),
+    PhaseEnum.PHASE2: frozenset(PHASE2_STAGE_KEYS),
+    PhaseEnum.PHASE3: frozenset(
+        {
+            PHASE3_FORMAL_COMMIT_ASSET_KEY,
+            PHASE3_MANIFEST_ASSET_KEY,
+        }
+    ),
+}
+_PARITY_MANIFEST_FIELD_KEYS = frozenset(
+    {
+        "cycle_id",
+        "policy_version",
+        "contract_version",
+        "publish_status",
+        "phase_statuses",
+        "inconclusive",
+    }
+)
+_BACKEND_RUNTIME_MANIFEST_FIELD_KEYS = frozenset(
+    {
+        "temporal_run_id",
+        "temporal_workflow_id",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ObservedCheckEvaluation:
+    name: str
+    passed: bool | None
+    metadata: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +147,8 @@ class TemporalParityFakeProvider:
         self.cycle_id = "cycle-unset"
         self.executed_phases: list[str] = []
         self.temporal_requests: list[TemporalCycleRequest] = []
+        self.active_policy: GatePolicyProfile | None = None
+        self.phase_status_overrides: dict[str, str] = {}
         self._assets = self._build_assets()
         self._checks = self._build_checks()
 
@@ -104,6 +157,7 @@ class TemporalParityFakeProvider:
         *,
         backend: Literal["dagster_only", "dagster_plus_temporal"],
         cycle_id: str,
+        policy: GatePolicyProfile,
     ) -> None:
         case_part = self.case.case_id.replace(":", "-") if self.case else "happy"
         self.active_request_dir = self.request_root / backend / case_part
@@ -111,8 +165,10 @@ class TemporalParityFakeProvider:
             shutil.rmtree(self.active_request_dir)
         self.active_request_dir.mkdir(parents=True)
         self.cycle_id = cycle_id
+        self.active_policy = policy
         self.executed_phases.clear()
         self.temporal_requests.clear()
+        self.phase_status_overrides.clear()
 
     def get_assets(self) -> tuple[object, ...]:
         return self._assets
@@ -180,6 +236,7 @@ class TemporalParityFakeProvider:
 
         decision = _classify_case(self.case, policy)
         if decision.action is GateAction.MARK_INCONCLUSIVE:
+            self.phase_status_overrides[phase.value] = "inconclusive"
             _dispatch_case_alert(
                 decision,
                 cycle_id=request.cycle_id,
@@ -309,12 +366,16 @@ class TemporalParityFakeProvider:
             name=PHASE3_MANIFEST_ASSET_KEY,
             group_name=PHASE3_GROUP_NAME,
         )
-        def cycle_publish_manifest(formal_objects_commit: str) -> str:
+        def cycle_publish_manifest(
+            context: object,
+            formal_objects_commit: str,
+        ) -> str:
             owner._mark_phase(PhaseEnum.PHASE3)
             if owner._is_case("phase3_manifest_write_failed"):
                 raise RuntimeError(
                     f"fake manifest write failed after {formal_objects_commit}",
                 )
+            owner._add_manifest_metadata(context)
             return f"{formal_objects_commit}:manifest"
 
         @dagster.asset(
@@ -364,7 +425,10 @@ class TemporalParityFakeProvider:
         ) -> object:
             if not owner._is_case("phase0_dbt_test_failed"):
                 return dagster.AssetCheckResult(passed=True)
-            decision = _classify_case(cast(GateMatrixParityCase, owner.case), gate_policy.policy)
+            decision = _classify_case(
+                cast(GateMatrixParityCase, owner.case),
+                gate_policy.policy,
+            )
             plan = owner._write_asset_only_rerun_request(
                 _run_id_from_context(context),
                 failed_node=cast(GateMatrixParityCase, owner.case).failed_node,
@@ -433,6 +497,7 @@ class TemporalParityFakeProvider:
             if not owner._is_case("phase2_single_stock_task_failed"):
                 return dagster.AssetCheckResult(passed=True)
             decision = _classify_case(cast(GateMatrixParityCase, owner.case), gate_policy.policy)
+            owner.phase_status_overrides[PhaseEnum.PHASE2.value] = "inconclusive"
             _dispatch_case_alert(
                 decision,
                 cycle_id=_cycle_id_from_context(context, owner.cycle_id),
@@ -621,6 +686,27 @@ class TemporalParityFakeProvider:
         if phase.value not in self.executed_phases:
             self.executed_phases.append(phase.value)
 
+    def _add_manifest_metadata(self, context: object) -> None:
+        add_output_metadata = getattr(context, "add_output_metadata", None)
+        if not callable(add_output_metadata):
+            return
+
+        policy = self.active_policy
+        if policy is None:
+            raise RuntimeError("parity provider active_policy was not initialized")
+
+        phase_statuses = {
+            phase.value: self.phase_status_overrides.get(phase.value, "succeeded")
+            for phase in _PHASES
+        }
+        metadata = _manifest_fields(
+            self.cycle_id,
+            policy,
+            phase_statuses,
+        )
+        metadata["phase_statuses"] = list(metadata["phase_statuses"])
+        add_output_metadata(metadata)
+
 
 class InProcessTemporalParityExecutor:
     """In-process executor that runs the parity fake through the workflow seam."""
@@ -713,7 +799,11 @@ def execute_dagster_only_snapshot(
 
     policy = load_gate_policy(policy_path)
     provider = _parity_provider(module_factories)
-    provider.reset_runtime(backend="dagster_only", cycle_id=cycle_id)
+    provider.reset_runtime(
+        backend="dagster_only",
+        cycle_id=cycle_id,
+        policy=policy,
+    )
     result: object | None = None
 
     with _provider_runtime_env(provider), _capture_gate_alerts() as alerts:
@@ -761,7 +851,11 @@ async def execute_temporal_snapshot(
 
     policy = load_gate_policy(policy_path)
     provider = _parity_provider(module_factories)
-    provider.reset_runtime(backend="dagster_plus_temporal", cycle_id=cycle_id)
+    provider.reset_runtime(
+        backend="dagster_plus_temporal",
+        cycle_id=cycle_id,
+        policy=policy,
+    )
     result: object | None = None
     temporal_result: object | None = None
 
@@ -838,25 +932,51 @@ def _snapshot_from_runtime(
     temporal_result: object | None = None,
 ) -> CycleParitySnapshot:
     _assert_expected_success(provider.case, result, temporal_result)
-    phase_statuses = _phase_statuses(provider.case)
-    manifest_fields = _manifest_fields(cycle_id, policy, phase_statuses)
     alert_payloads = tuple(_stable_alert_payload(record) for record in alert_records)
-    gate_decisions = tuple(
-        _decision_from_alert(payload, policy) for payload in alert_payloads
+    check_evaluations = _asset_check_evaluations(result)
+    materializations = _asset_materialization_metadata_by_name(result)
+    gate_decisions = _runtime_gate_decisions(
+        policy=policy,
+        alert_payloads=alert_payloads,
+        check_evaluations=check_evaluations,
+        temporal_result=temporal_result,
     )
+    if temporal_result is None:
+        phase_statuses = _dagster_phase_statuses(
+            result=result,
+            gate_decisions=gate_decisions,
+            materialized_asset_names=frozenset(materializations),
+        )
+        manifest_fields = _dagster_manifest_fields(
+            materializations=materializations,
+            cycle_id=cycle_id,
+            policy=policy,
+            phase_statuses=phase_statuses,
+        )
+    else:
+        phase_statuses = _temporal_phase_statuses(
+            result=result,
+            temporal_result=temporal_result,
+            phase0_gate_decisions=tuple(
+                decision
+                for decision in gate_decisions
+                if decision.phase is PhaseEnum.PHASE0
+            ),
+            phase0_materialized_asset_names=frozenset(materializations),
+        )
+        manifest_fields = _temporal_manifest_fields(
+            temporal_result=temporal_result,
+            phase_statuses=phase_statuses,
+        )
     request_payloads = _rerun_request_payloads(provider.active_request_dir)
-    rerun_status = _rerun_request_status(provider.case, request_payloads)
-    failed_node = (
-        alert_payloads[0].get("failed_node")
-        if alert_payloads
-        else provider.case.failed_node
-        if provider.case
-        else None
+    rerun_status = _rerun_request_status(request_payloads)
+    failed_node = _diagnostic_failed_node(
+        alert_payloads=alert_payloads,
+        check_evaluations=check_evaluations,
     )
-    runbook_url = (
-        alert_payloads[0].get("runbook_url")
-        if alert_payloads
-        else _runbook_url(provider.case)
+    runbook_url = _diagnostic_runbook_url(
+        alert_payloads=alert_payloads,
+        gate_decisions=gate_decisions,
     )
     diagnostics = {
         "failed_node": failed_node,
@@ -865,19 +985,22 @@ def _snapshot_from_runtime(
         "rerun_selection": _rerun_selection(request_payloads),
         "inconclusive": (
             "present"
-            if any(decision.action is GateAction.MARK_INCONCLUSIVE for decision in gate_decisions)
+            if any(
+                decision.action is GateAction.MARK_INCONCLUSIVE
+                for decision in gate_decisions
+            )
             else "not_applicable"
         ),
         "phase1_3_started": (
             "yes"
             if any(
-                phase in provider.executed_phases
-                for phase in ("phase1", "phase2", "phase3")
+                phase_statuses[phase.value] != "skipped"
+                for phase in (PhaseEnum.PHASE1, PhaseEnum.PHASE2, PhaseEnum.PHASE3)
             )
             else "no"
         ),
     }
-    return CycleParitySnapshot(
+    snapshot = CycleParitySnapshot(
         cycle_id=cycle_id,
         phase_statuses=phase_statuses,
         gate_decisions=gate_decisions,
@@ -888,6 +1011,346 @@ def _snapshot_from_runtime(
             provider.case.case_id if provider.case else "happy_path": rerun_status,
         },
     )
+    _assert_expected_snapshot(provider.case, snapshot, policy)
+    return snapshot
+
+
+def _runtime_gate_decisions(
+    *,
+    policy: GatePolicyProfile,
+    alert_payloads: Sequence[Mapping[str, object]],
+    check_evaluations: Sequence[_ObservedCheckEvaluation],
+    temporal_result: object | None,
+) -> tuple[GateDecision, ...]:
+    decisions: list[GateDecision] = []
+    if temporal_result is not None:
+        for phase_result in getattr(temporal_result, "phase_results", ()) or ():
+            decision = getattr(phase_result, "gate_decision", None)
+            if isinstance(decision, GateDecision):
+                decisions.append(decision)
+
+    for evaluation in check_evaluations:
+        decision = _decision_from_check_evaluation(evaluation, policy)
+        if decision is not None:
+            decisions.append(decision)
+
+    decisions.extend(
+        _decision_from_alert(payload, policy) for payload in alert_payloads
+    )
+    return _unique_gate_decisions(decisions)
+
+
+def _decision_from_check_evaluation(
+    evaluation: _ObservedCheckEvaluation,
+    policy: GatePolicyProfile,
+) -> GateDecision | None:
+    action = evaluation.metadata.get("action")
+    if (
+        evaluation.passed is not False
+        and action != GateAction.MARK_INCONCLUSIVE.value
+    ):
+        return None
+    if action in (None, "", GateAction.CONTINUE.value):
+        return None
+
+    failure_class = evaluation.metadata.get("failure_class")
+    if not isinstance(failure_class, str) or not failure_class:
+        return None
+
+    event: dict[str, object] = {"failure_class": failure_class}
+    scenario_id = evaluation.metadata.get("scenario_id")
+    if isinstance(scenario_id, str) and scenario_id:
+        event["scenario_id"] = scenario_id
+
+    from orchestrator.checks.classifier import classify_gate_result
+
+    return classify_gate_result(
+        _phase_from_check_evaluation(evaluation),
+        event,
+        policy,
+    )
+
+
+def _phase_from_check_evaluation(
+    evaluation: _ObservedCheckEvaluation,
+) -> PhaseEnum:
+    phase_value = evaluation.metadata.get("phase")
+    if isinstance(phase_value, str) and phase_value:
+        return PhaseEnum(phase_value)
+
+    if evaluation.name == "llm_health_check":
+        return PhaseEnum.PHASE0
+    for phase in _PHASES:
+        if evaluation.name.startswith(phase.value):
+            return phase
+    if "phase2" in evaluation.name:
+        return PhaseEnum.PHASE2
+
+    raise AssertionError(
+        f"failed parity check {evaluation.name!r} did not expose phase metadata",
+    )
+
+
+def _unique_gate_decisions(
+    decisions: Iterable[GateDecision],
+) -> tuple[GateDecision, ...]:
+    unique: list[GateDecision] = []
+    seen: set[tuple[object, ...]] = set()
+    for decision in decisions:
+        if decision.action is GateAction.CONTINUE:
+            continue
+        key = (
+            decision.phase,
+            decision.failure_class,
+            decision.action,
+            decision.scenario_id,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(decision)
+    return tuple(unique)
+
+
+def _dagster_phase_statuses(
+    *,
+    result: object | None,
+    gate_decisions: Sequence[GateDecision],
+    materialized_asset_names: frozenset[str],
+) -> dict[str, str]:
+    failed_step_keys = _failed_step_keys(result)
+    statuses: dict[str, str] = {}
+    terminal_seen = False
+
+    for phase in _PHASES:
+        if terminal_seen:
+            statuses[phase.value] = "skipped"
+            continue
+
+        decision = _decision_for_phase(gate_decisions, phase)
+        if decision is not None:
+            status = _phase_status_from_decision(decision)
+            statuses[phase.value] = status
+            terminal_seen = _is_terminal_phase_status(status)
+            continue
+
+        if _PHASE_TERMINAL_ASSETS[phase] in materialized_asset_names:
+            statuses[phase.value] = "succeeded"
+            continue
+
+        if any(
+            _step_key_matches_phase(step_key, phase)
+            for step_key in failed_step_keys
+        ):
+            statuses[phase.value] = "failed"
+            terminal_seen = True
+            continue
+
+        statuses[phase.value] = "skipped"
+
+    return statuses
+
+
+def _temporal_phase_statuses(
+    *,
+    result: object | None,
+    temporal_result: object,
+    phase0_gate_decisions: Sequence[GateDecision],
+    phase0_materialized_asset_names: frozenset[str],
+) -> dict[str, str]:
+    phase0_status = _dagster_phase_statuses(
+        result=result,
+        gate_decisions=phase0_gate_decisions,
+        materialized_asset_names=phase0_materialized_asset_names,
+    )[PhaseEnum.PHASE0.value]
+    phase_results_by_phase = {
+        getattr(phase_result, "phase", None): phase_result
+        for phase_result in getattr(temporal_result, "phase_results", ()) or ()
+    }
+    statuses = {PhaseEnum.PHASE0.value: phase0_status}
+
+    for phase in (PhaseEnum.PHASE1, PhaseEnum.PHASE2, PhaseEnum.PHASE3):
+        phase_result = phase_results_by_phase.get(phase)
+        if phase_result is None:
+            statuses[phase.value] = "missing"
+        else:
+            statuses[phase.value] = _phase_status_from_temporal_result(phase_result)
+
+    return statuses
+
+
+def _decision_for_phase(
+    gate_decisions: Sequence[GateDecision],
+    phase: PhaseEnum,
+) -> GateDecision | None:
+    return next(
+        (
+            decision
+            for decision in gate_decisions
+            if decision.phase is phase and decision.action is not GateAction.CONTINUE
+        ),
+        None,
+    )
+
+
+def _phase_status_from_decision(decision: GateDecision) -> str:
+    if decision.action is GateAction.MARK_INCONCLUSIVE:
+        return "inconclusive"
+    if decision.action is GateAction.REPAIR_MANIFEST:
+        return "repair_required"
+    return "failed"
+
+
+def _phase_status_from_temporal_result(phase_result: object) -> str:
+    decision = getattr(phase_result, "gate_decision", None)
+    if (
+        isinstance(decision, GateDecision)
+        and decision.action is not GateAction.CONTINUE
+    ):
+        return _phase_status_from_decision(decision)
+    status = getattr(phase_result, "status", None)
+    return status if isinstance(status, str) else "missing"
+
+
+def _is_terminal_phase_status(status: str) -> bool:
+    return status in {"failed", "repair_required"}
+
+
+def _step_key_matches_phase(step_key: str, phase: PhaseEnum) -> bool:
+    if step_key in _PHASE_ASSET_NAMES[phase]:
+        return True
+    return any(asset_name in step_key for asset_name in _PHASE_ASSET_NAMES[phase])
+
+
+def _dagster_manifest_fields(
+    *,
+    materializations: Mapping[str, Mapping[str, object]],
+    cycle_id: str,
+    policy: GatePolicyProfile,
+    phase_statuses: Mapping[str, str],
+) -> dict[str, object]:
+    metadata = materializations.get(PHASE3_MANIFEST_ASSET_KEY)
+    if metadata:
+        return _normalize_manifest_fields(metadata)
+    return _manifest_fields(cycle_id, policy, phase_statuses)
+
+
+def _temporal_manifest_fields(
+    *,
+    temporal_result: object,
+    phase_statuses: Mapping[str, str],
+) -> dict[str, object]:
+    manifest_fields = _plain_mapping(
+        getattr(temporal_result, "manifest_fields", {}) or {},
+    )
+    _assert_temporal_manifest_phase_statuses(manifest_fields, phase_statuses)
+    normalized = _normalize_manifest_fields(manifest_fields)
+    normalized["phase_statuses"] = _phase_status_rows(phase_statuses)
+    return normalized
+
+
+def _assert_temporal_manifest_phase_statuses(
+    manifest_fields: Mapping[str, object],
+    phase_statuses: Mapping[str, str],
+) -> None:
+    actual_phase_statuses = _phase_status_rows_from_value(
+        manifest_fields.get("phase_statuses"),
+    )
+    expected_phase_statuses = tuple(
+        row
+        for row in _phase_status_rows(phase_statuses)
+        if row["phase"] != PhaseEnum.PHASE0.value
+    )
+    if actual_phase_statuses != expected_phase_statuses:
+        raise AssertionError(
+            "Temporal manifest phase_statuses did not match "
+            "TemporalCycleResult.phase_results",
+        )
+
+
+def _normalize_manifest_fields(
+    metadata: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        key: _normalize_manifest_field(key, value)
+        for key, value in metadata.items()
+        if key in _PARITY_MANIFEST_FIELD_KEYS
+        and key not in _BACKEND_RUNTIME_MANIFEST_FIELD_KEYS
+    }
+
+
+def _normalize_manifest_field(key: str, value: object) -> object:
+    if key == "phase_statuses":
+        return _phase_status_rows_from_value(value)
+    return _plain_metadata_value(value)
+
+
+def _phase_status_rows(
+    phase_statuses: Mapping[str, str],
+) -> tuple[dict[str, str], ...]:
+    return tuple(
+        {"phase": phase, "status": status}
+        for phase, status in phase_statuses.items()
+    )
+
+
+def _phase_status_rows_from_value(value: object) -> tuple[dict[str, str], ...]:
+    value = _plain_metadata_value(value)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise AssertionError("manifest phase_statuses must be a sequence")
+
+    rows: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise AssertionError("manifest phase_statuses entries must be mappings")
+        phase = item.get("phase")
+        status = item.get("status")
+        if not isinstance(phase, str) or not isinstance(status, str):
+            raise AssertionError(
+                "manifest phase_statuses entries must include phase and status",
+            )
+        rows.append({"phase": phase, "status": status})
+    return tuple(rows)
+
+
+def _assert_expected_snapshot(
+    case: GateMatrixParityCase | None,
+    snapshot: CycleParitySnapshot,
+    policy: GatePolicyProfile,
+) -> None:
+    expected_phase_statuses = _phase_statuses(case)
+    actual_phase_statuses = dict(snapshot.phase_statuses)
+    if actual_phase_statuses != expected_phase_statuses:
+        raise AssertionError(
+            f"runtime phase_statuses for {case.case_id if case else 'happy'} "
+            f"did not match expected policy outcome: {actual_phase_statuses!r}",
+        )
+
+    expected_manifest_fields = _manifest_fields(
+        snapshot.cycle_id,
+        policy,
+        actual_phase_statuses,
+    )
+    actual_manifest_fields = dict(snapshot.manifest_fields)
+    if actual_manifest_fields != expected_manifest_fields:
+        raise AssertionError(
+            f"runtime manifest_fields for {case.case_id if case else 'happy'} "
+            f"did not match expected policy outcome: {actual_manifest_fields!r}",
+        )
+
+    expected_rerun_status = (
+        "present"
+        if case is not None
+        and case.action in (GateAction.PARTIAL_RERUN, GateAction.REPAIR_MANIFEST)
+        else "not_applicable"
+    )
+    rerun_key = case.case_id if case is not None else "happy_path"
+    actual_rerun_status = snapshot.rerun_request_statuses[rerun_key]
+    if actual_rerun_status != expected_rerun_status:
+        raise AssertionError(
+            f"runtime rerun request status for {rerun_key} was "
+            f"{actual_rerun_status!r}, expected {expected_rerun_status!r}",
+        )
 
 
 def _assert_expected_success(
@@ -952,7 +1415,7 @@ def _manifest_fields(
         publish_status = "repair_required"
     else:
         publish_status = "not_published"
-    return {
+    fields: dict[str, object] = {
         "cycle_id": cycle_id,
         "policy_version": policy.policy_version,
         "contract_version": policy.contract_version,
@@ -962,6 +1425,218 @@ def _manifest_fields(
             for phase, status in phase_statuses.items()
         ),
     }
+    if any(status == "inconclusive" for status in phase_statuses.values()):
+        fields["inconclusive"] = True
+    return fields
+
+
+def _asset_check_evaluations(
+    result: object | None,
+) -> tuple[_ObservedCheckEvaluation, ...]:
+    evaluations: list[_ObservedCheckEvaluation] = []
+    for event in _result_events(result):
+        if not _is_asset_check_evaluation_event(event):
+            continue
+
+        evaluation = _asset_check_evaluation_from_event(event)
+        if evaluation is None:
+            continue
+
+        name = _check_evaluation_name(evaluation)
+        if name is None:
+            continue
+
+        passed = getattr(evaluation, "passed", None)
+        evaluations.append(
+            _ObservedCheckEvaluation(
+                name=name,
+                passed=passed if isinstance(passed, bool) else None,
+                metadata=_plain_mapping(getattr(evaluation, "metadata", {}) or {}),
+            )
+        )
+    return tuple(evaluations)
+
+
+def _asset_materialization_metadata_by_name(
+    result: object | None,
+) -> dict[str, Mapping[str, object]]:
+    materializations: dict[str, Mapping[str, object]] = {}
+    for event in _result_events(result):
+        if not _is_asset_materialization_event(event):
+            continue
+
+        materialization = _asset_materialization_from_event(event)
+        asset_key = getattr(event, "asset_key", None)
+        if asset_key is None and materialization is not None:
+            asset_key = getattr(materialization, "asset_key", None)
+        asset_name = _asset_key_name(asset_key)
+        if asset_name is None:
+            continue
+
+        raw_metadata = (
+            getattr(materialization, "metadata", None)
+            if materialization is not None
+            else None
+        )
+        if raw_metadata is None:
+            raw_metadata = getattr(event, "metadata", {}) or {}
+        materializations[asset_name] = _plain_mapping(raw_metadata or {})
+    return materializations
+
+
+def _failed_step_keys(result: object | None) -> frozenset[str]:
+    step_keys: set[str] = set()
+    for event in _result_events(result):
+        if not (
+            getattr(event, "is_step_failure", False)
+            or getattr(event, "event_type_value", None) == "STEP_FAILURE"
+        ):
+            continue
+        step_key = getattr(event, "step_key", None)
+        if isinstance(step_key, str) and step_key:
+            step_keys.add(step_key)
+    return frozenset(step_keys)
+
+
+def _result_events(result: object | None) -> tuple[object, ...]:
+    if result is None:
+        return ()
+    return tuple(getattr(result, "all_events", ()) or ())
+
+
+def _is_asset_check_evaluation_event(event: object) -> bool:
+    return bool(
+        getattr(event, "is_asset_check_evaluation", False)
+        or getattr(event, "event_type_value", None) == "ASSET_CHECK_EVALUATION"
+    )
+
+
+def _is_asset_materialization_event(event: object) -> bool:
+    return bool(
+        getattr(event, "is_step_materialization", False)
+        or getattr(event, "event_type_value", None) == "ASSET_MATERIALIZATION"
+    )
+
+
+def _asset_check_evaluation_from_event(event: object) -> object | None:
+    event_specific_data = getattr(event, "event_specific_data", None)
+    for value in (
+        getattr(event_specific_data, "asset_check_evaluation", None),
+        getattr(event_specific_data, "evaluation", None),
+        (
+            event_specific_data
+            if _looks_like_asset_check_evaluation(event_specific_data)
+            else None
+        ),
+        getattr(event, "asset_check_evaluation", None),
+    ):
+        if value is not None:
+            return value
+    return None
+
+
+def _asset_materialization_from_event(event: object) -> object | None:
+    event_specific_data = getattr(event, "event_specific_data", None)
+    return getattr(event_specific_data, "materialization", None)
+
+
+def _looks_like_asset_check_evaluation(value: object) -> bool:
+    return value is not None and (
+        hasattr(value, "check_name") or hasattr(value, "check_key")
+    )
+
+
+def _check_evaluation_name(evaluation: object) -> str | None:
+    check_name = getattr(evaluation, "check_name", None)
+    if isinstance(check_name, str) and check_name:
+        return check_name
+
+    check_key = getattr(evaluation, "check_key", None)
+    check_name = getattr(check_key, "name", None)
+    if isinstance(check_name, str) and check_name:
+        return check_name
+    return None
+
+
+def _asset_key_name(asset_key: object | None) -> str | None:
+    if asset_key is None:
+        return None
+    path = getattr(asset_key, "path", None)
+    if isinstance(path, Sequence) and path:
+        return str(path[-1])
+    if isinstance(asset_key, str) and asset_key:
+        return asset_key.rsplit("/", maxsplit=1)[-1]
+    return None
+
+
+def _plain_mapping(metadata: Mapping[object, object]) -> dict[str, object]:
+    return {
+        str(key): _plain_metadata_value(value)
+        for key, value in metadata.items()
+    }
+
+
+def _plain_metadata_value(value: object) -> object:
+    for attribute_name in ("value", "text", "data", "path", "url"):
+        if not hasattr(value, attribute_name):
+            continue
+        attribute_value = getattr(value, attribute_name)
+        if not callable(attribute_value):
+            return _plain_metadata_value(attribute_value)
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _plain_metadata_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return tuple(_plain_metadata_value(item) for item in value)
+    return value
+
+
+def _diagnostic_failed_node(
+    *,
+    alert_payloads: Sequence[Mapping[str, object]],
+    check_evaluations: Sequence[_ObservedCheckEvaluation],
+) -> object | None:
+    if alert_payloads:
+        failed_node = alert_payloads[0].get("failed_node")
+        if failed_node:
+            return failed_node
+
+    for evaluation in check_evaluations:
+        if evaluation.passed is not False:
+            continue
+        failed_node = evaluation.metadata.get("failed_node")
+        if failed_node:
+            return failed_node
+        failed_nodes = evaluation.metadata.get("failed_nodes")
+        if failed_nodes:
+            return failed_nodes
+    return None
+
+
+def _diagnostic_runbook_url(
+    *,
+    alert_payloads: Sequence[Mapping[str, object]],
+    gate_decisions: Sequence[GateDecision],
+) -> str | None:
+    if alert_payloads:
+        runbook_url = alert_payloads[0].get("runbook_url")
+        if isinstance(runbook_url, str) and runbook_url:
+            return runbook_url
+
+    if not gate_decisions:
+        return None
+    decision = gate_decisions[0]
+    if decision.failure_class is None:
+        return None
+    return runbook_url_for(
+        decision.phase.value,
+        decision.failure_class.value,
+        decision.action.value,
+        scenario_id=decision.scenario_id,
+    )
 
 
 def _decision_from_alert(
@@ -1005,26 +1680,15 @@ def _rerun_request_payloads(request_dir: Path) -> tuple[Mapping[str, object], ..
     return tuple(payloads)
 
 
-def _rerun_request_status(
-    case: GateMatrixParityCase | None,
-    payloads: Sequence[Mapping[str, object]],
-) -> str:
-    if case is None or case.action not in (
-        GateAction.PARTIAL_RERUN,
-        GateAction.REPAIR_MANIFEST,
-    ):
-        return "not_applicable"
+def _rerun_request_status(payloads: Sequence[Mapping[str, object]]) -> str:
     if not payloads:
-        return "missing"
+        return "not_applicable"
     if len(payloads) != 1:
         return "invalid"
     selection = _rerun_selection(payloads)
     if not selection:
         return "invalid"
-    if (
-        case.action is GateAction.REPAIR_MANIFEST
-        and PHASE3_FORMAL_COMMIT_ASSET_KEY in selection
-    ):
+    if PHASE3_FORMAL_COMMIT_ASSET_KEY in selection:
         return "invalid"
     return "present"
 
@@ -1036,17 +1700,6 @@ def _rerun_selection(payloads: Sequence[Mapping[str, object]]) -> tuple[str, ...
     if not isinstance(selection, Sequence) or isinstance(selection, (str, bytes)):
         return ()
     return tuple(str(item) for item in selection)
-
-
-def _runbook_url(case: GateMatrixParityCase | None) -> str | None:
-    if case is None:
-        return None
-    return runbook_url_for(
-        case.phase.value,
-        case.failure_class.value,
-        case.action.value,
-        scenario_id=case.scenario_id,
-    )
 
 
 def _classify_case(

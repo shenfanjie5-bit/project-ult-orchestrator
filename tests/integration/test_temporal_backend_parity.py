@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from orchestrator.alerting import runbook_url_for
 from orchestrator.jobs.phase3 import PHASE3_FORMAL_COMMIT_ASSET_KEY
 from orchestrator.policy import GateAction, PhaseEnum, load_gate_policy
+from orchestrator.temporal import TemporalCycleResult, TemporalPhaseResult
 from orchestrator.temporal.parity import CycleParitySnapshot
 from tests.integration.temporal_parity_fixtures import (
     GateMatrixParityCase,
+    _snapshot_from_runtime,
     build_temporal_parity_fake_provider,
     execute_dagster_only_snapshot,
     execute_temporal_snapshot,
@@ -175,6 +178,57 @@ def test_backend_specific_runtime_ids_are_excluded_from_manifest_parity(
         assert "temporal_run_id" not in manifest
 
 
+def test_snapshot_rejects_temporal_phase_status_synthesized_from_case(
+    stub_policy_path: str,
+    tmp_path: Path,
+) -> None:
+    policy = load_gate_policy(stub_policy_path)
+    case = next(
+        case
+        for case in _POLICY_CASES
+        if case.scenario_id == "phase2_single_stock_task_failed"
+    )
+    temporal_result = _runtime_temporal_result(
+        cycle_id="cycle-runtime-phase-mismatch",
+        policy_version=policy.policy_version,
+        contract_version=policy.contract_version,
+        phase2_status="succeeded",
+    )
+
+    with pytest.raises(AssertionError, match="runtime phase_statuses"):
+        _snapshot_from_runtime(
+            cycle_id="cycle-runtime-phase-mismatch",
+            policy=policy,
+            provider=_snapshot_provider(case, tmp_path),
+            result=_phase0_success_result(),
+            alert_records=(),
+            temporal_result=temporal_result,
+        )
+
+
+def test_snapshot_rejects_temporal_manifest_synthesized_from_case(
+    stub_policy_path: str,
+    tmp_path: Path,
+) -> None:
+    policy = load_gate_policy(stub_policy_path)
+    temporal_result = _runtime_temporal_result(
+        cycle_id="cycle-runtime-manifest-mismatch",
+        policy_version=policy.policy_version,
+        contract_version=policy.contract_version,
+        publish_status="not_published",
+    )
+
+    with pytest.raises(AssertionError, match="runtime manifest_fields"):
+        _snapshot_from_runtime(
+            cycle_id="cycle-runtime-manifest-mismatch",
+            policy=policy,
+            provider=_snapshot_provider(None, tmp_path),
+            result=_phase0_success_result(),
+            alert_records=(),
+            temporal_result=temporal_result,
+        )
+
+
 def _execute_pair(
     dagster: object,
     dagster_instance: object,
@@ -217,6 +271,59 @@ def _execute_pair(
         ),
     )
     return dagster_snapshot, temporal_snapshot, provider
+
+
+def _snapshot_provider(
+    case: GateMatrixParityCase | None,
+    tmp_path: Path,
+) -> object:
+    request_dir = tmp_path / "requests"
+    request_dir.mkdir()
+    return SimpleNamespace(case=case, active_request_dir=request_dir)
+
+
+def _phase0_success_result() -> object:
+    from orchestrator.jobs.phase0_constants import PHASE0_CANDIDATE_FREEZE_ASSET_KEY
+
+    asset_key = SimpleNamespace(path=(PHASE0_CANDIDATE_FREEZE_ASSET_KEY,))
+    materialization = SimpleNamespace(asset_key=asset_key, metadata={})
+    event = SimpleNamespace(
+        is_step_materialization=True,
+        event_type_value="ASSET_MATERIALIZATION",
+        asset_key=asset_key,
+        event_specific_data=SimpleNamespace(materialization=materialization),
+    )
+    return SimpleNamespace(success=True, run_id="phase0-run", all_events=(event,))
+
+
+def _runtime_temporal_result(
+    *,
+    cycle_id: str,
+    policy_version: str,
+    contract_version: str,
+    phase2_status: str = "succeeded",
+    publish_status: str = "published",
+) -> TemporalCycleResult:
+    phase_results = (
+        TemporalPhaseResult(phase=PhaseEnum.PHASE1, status="succeeded"),
+        TemporalPhaseResult(phase=PhaseEnum.PHASE2, status=phase2_status),
+        TemporalPhaseResult(phase=PhaseEnum.PHASE3, status="succeeded"),
+    )
+    return TemporalCycleResult(
+        cycle_id=cycle_id,
+        status="succeeded",
+        phase_results=phase_results,
+        manifest_fields={
+            "cycle_id": cycle_id,
+            "policy_version": policy_version,
+            "contract_version": contract_version,
+            "publish_status": publish_status,
+            "phase_statuses": tuple(
+                {"phase": result.phase.value, "status": result.status}
+                for result in phase_results
+            ),
+        },
+    )
 
 
 def _assert_snapshot_parity(
