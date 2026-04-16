@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from orchestrator.alerting.payload import AlertPayload
 
 logger = logging.getLogger(__name__)
+_LOGGING_CHANNELS = {"logging", "ops"}
 
 
 def dispatch_alert(
@@ -13,7 +14,7 @@ def dispatch_alert(
     channels: Iterable[str] = ("logging",),
 ) -> None:
     for channel in channels:
-        if channel == "logging":
+        if channel in _LOGGING_CHANNELS:
             logger.warning(json.dumps(dataclasses.asdict(payload)))
             continue
 
