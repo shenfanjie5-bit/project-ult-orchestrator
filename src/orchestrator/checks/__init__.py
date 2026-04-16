@@ -32,7 +32,10 @@ from orchestrator.checks.phase2 import (
 )
 from orchestrator.checks.phase3 import (
     FormalCommitFailureEvent,
+    ManifestWriteFailureEvent,
     classify_formal_commit_failure,
+    classify_manifest_write_failure,
+    plan_manifest_repair_rerun,
 )
 from orchestrator.policy import FailureClass, GateAction, PhaseEnum
 
@@ -63,6 +66,7 @@ __all__ = [
     "GraphPromotionFailureEvent",
     "LLMHealthProbe",
     "LLMHealthResult",
+    "ManifestWriteFailureEvent",
     "PHASE2_POOL_FAILURE_RATE_CHECK_NAME",
     "PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY",
     "Phase2PoolFailureRateEvent",
@@ -75,6 +79,7 @@ __all__ = [
     "classify_dbt_test_failure",
     "classify_formal_commit_failure",
     "classify_graph_promotion_failure",
+    "classify_manifest_write_failure",
     "classify_phase2_pool_failure_rate",
     "classify_phase2_single_stock_failure",
     "dispatch_gate_decision_alert",
@@ -84,5 +89,6 @@ __all__ = [
     "phase0_ping_check",
     "phase2_failure_rate",
     "plan_dbt_test_partial_rerun",
+    "plan_manifest_repair_rerun",
     "should_advance_ready_graph",
 ]

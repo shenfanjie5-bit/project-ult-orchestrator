@@ -11,6 +11,7 @@ from dagster import AssetKey, RunRequest, SkipReason, sensor
 
 from orchestrator.cli.rerun import DEFAULT_REQUEST_DIR
 from orchestrator.jobs.cycle import daily_cycle_job
+from orchestrator.jobs.phase3 import PHASE3_FORMAL_COMMIT_ASSET_KEY
 
 _REQUEST_DIR_ENV = "ORCHESTRATOR_RERUN_REQUEST_DIR"
 _FAILED_DIR_NAME = ".failed"
@@ -122,6 +123,16 @@ def _validate_request(
             f"{rerun_mode}",
         )
 
+    repair_only_error = _validate_repair_only_selection(
+        request_name,
+        failed_node=failed_node,
+        rerun_mode=rerun_mode,
+        rerun_selection=rerun_selection,
+        requires_manual_ack=requires_manual_ack,
+    )
+    if repair_only_error is not None:
+        return None, repair_only_error
+
     generated_at = payload.get("generated_at")
     if not _is_non_empty_str(generated_at):
         return (
@@ -137,6 +148,43 @@ def _validate_request(
         "rerun_mode": rerun_mode,
         "generated_at": generated_at,
     }, None
+
+
+def _validate_repair_only_selection(
+    request_name: str,
+    *,
+    failed_node: str,
+    rerun_mode: object,
+    rerun_selection: list[object],
+    requires_manual_ack: bool,
+) -> str | None:
+    if rerun_mode != "repair_only":
+        return None
+
+    if not requires_manual_ack:
+        return (
+            f"invalid manual rerun request {request_name}: "
+            "repair_only requests require manual acknowledgment"
+        )
+    if len(rerun_selection) != 1:
+        return (
+            f"invalid manual rerun request {request_name}: "
+            "repair_only rerun_selection must contain exactly one repair asset"
+        )
+    selected_node = rerun_selection[0]
+    if selected_node == failed_node:
+        return (
+            f"invalid manual rerun request {request_name}: "
+            "repair_only rerun_selection must target a repair asset, not "
+            "the failed node"
+        )
+    if selected_node == PHASE3_FORMAL_COMMIT_ASSET_KEY:
+        return (
+            f"invalid manual rerun request {request_name}: "
+            "repair_only rerun_selection must not include formal_objects_commit"
+        )
+
+    return None
 
 
 def _build_run_request(payload: dict[str, Any]) -> RunRequest:
