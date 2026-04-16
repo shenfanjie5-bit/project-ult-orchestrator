@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 import pytest
@@ -17,9 +16,6 @@ _FORBIDDEN_ROOT_MODULES = (
     "main" + "_core",
     "data" + "_platform",
     "audit" + "_eval",
-)
-_FORBIDDEN_BUSINESS_IMPORT = re.compile(
-    r"^(" + "|".join(re.escape(module) for module in _FORBIDDEN_ROOT_MODULES) + r")\.",
 )
 
 
@@ -154,7 +150,7 @@ def test_no_business_imports() -> None:
     for path in sorted((_REPO_ROOT / "src" / "orchestrator").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for module_name, lineno in _absolute_imports(tree):
-            if _FORBIDDEN_BUSINESS_IMPORT.match(module_name):
+            if _is_forbidden_business_import(module_name):
                 relative_path = path.relative_to(_REPO_ROOT)
                 violations.append(f"{relative_path}:{lineno}: {module_name}")
 
@@ -171,6 +167,13 @@ def _absolute_imports(tree: ast.AST) -> list[tuple[str, int]]:
             imports.append((node.module, node.lineno))
 
     return imports
+
+
+def _is_forbidden_business_import(module_name: str) -> bool:
+    return any(
+        module_name == root or module_name.startswith(f"{root}.")
+        for root in _FORBIDDEN_ROOT_MODULES
+    )
 
 
 def _heartbeat_asset_key(dbt_phase0_assets: object) -> object:
