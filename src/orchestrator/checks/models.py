@@ -17,4 +17,14 @@ class GateDecision:
     reason: str | None = None
 
 
-__all__ = ["GateDecision"]
+@dataclass(frozen=True, slots=True)
+class DataReadinessSignal:
+    """Readiness signal exposed by the upstream data provider."""
+
+    ready: bool
+    cycle_id: str
+    reason: str | None = None
+    failed_node: str = "data_readiness"
+
+
+__all__ = ["DataReadinessSignal", "GateDecision"]
