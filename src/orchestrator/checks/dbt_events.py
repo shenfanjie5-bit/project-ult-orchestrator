@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,10 +146,28 @@ def write_dbt_partial_rerun_request(
     target_dir = _rerun_request_dir(request_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     request_path = target_dir / _request_filename(plan.run_id, plan.failed_node)
-    request_path.write_text(
-        json.dumps(_request_from_plan(plan), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    payload = json.dumps(_request_from_plan(plan), indent=2, sort_keys=True) + "\n"
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=target_dir,
+            prefix=f".{request_path.stem}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write(payload)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+
+        os.replace(temp_path, request_path)
+        _fsync_directory(target_dir)
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
 
     return request_path
 
@@ -607,6 +626,20 @@ def _rerun_request_dir(request_dir: str | Path | None) -> Path:
         return Path(request_dir)
 
     return Path(os.environ.get(_RERUN_REQUEST_DIR_ENV, DEFAULT_REQUEST_DIR))
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def _validated_failed_node_from_event(

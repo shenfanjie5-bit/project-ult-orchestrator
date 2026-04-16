@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from datetime import datetime, timezone
 from inspect import signature
 from pathlib import Path
 from typing import Any
@@ -13,9 +15,10 @@ from orchestrator.checks.dbt_events import (
     handle_dbt_test_failure,
     plan_dbt_test_partial_rerun,
     stream_dbt_build_events,
+    write_dbt_partial_rerun_request,
 )
 from orchestrator.policy import FailureClass, GateAction, PhaseEnum, load_gate_policy
-from orchestrator.rerun import PartialRerunNotAllowed
+from orchestrator.rerun import PartialRerunNotAllowed, PartialRerunPlan
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -150,6 +153,50 @@ def test_stream_dbt_build_events_handles_failed_test_artifact(
     assert payload["failure_class"] == "task_level"
     assert request_payload["failed_node"] == "heartbeat"
     assert request_payload["rerun_selection"] == ["heartbeat"]
+
+
+def test_write_dbt_partial_rerun_request_is_atomically_published(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import orchestrator.checks.dbt_events as dbt_events
+
+    real_replace = os.replace
+    sensor_visible_files_before_publish: list[Path] = []
+
+    def replace_spy(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        temp_path = Path(src)
+        final_path = Path(dst)
+
+        assert temp_path.parent == tmp_path
+        assert temp_path.suffix == ".tmp"
+        assert final_path.suffix == ".json"
+
+        sensor_visible_files_before_publish.extend(tmp_path.glob("*.json"))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(dbt_events.os, "replace", replace_spy)
+
+    request_path = write_dbt_partial_rerun_request(
+        PartialRerunPlan(
+            run_id="run-dbt",
+            failed_node="heartbeat",
+            rerun_selection=("heartbeat",),
+            requires_manual_ack=False,
+            generated_at=datetime(2026, 4, 16, tzinfo=timezone.utc),
+            rerun_mode="asset_only",
+        ),
+        request_dir=tmp_path,
+    )
+
+    assert request_path == tmp_path / "run-dbt-heartbeat.json"
+    assert not list(tmp_path.glob("*.tmp"))
+    assert not (tmp_path / ".failed").exists()
+    assert sensor_visible_files_before_publish == []
+
+    payload = json.loads(request_path.read_text(encoding="utf-8"))
+    assert payload["run_id"] == "run-dbt"
+    assert payload["failed_node"] == "heartbeat"
 
 
 def test_classify_dbt_test_failure_from_node_name(gate_policy: Any) -> None:
