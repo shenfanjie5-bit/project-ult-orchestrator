@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -72,3 +73,27 @@ def test_phase0_readiness_ping_key_is_addressable(
 
     assert phase0_readiness_ping.key == asset_key
     assert asset_key in phase0_readiness_ping.keys
+
+
+def test_missing_dbt_manifest_fails_with_prepare_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("dagster", reason="dagster is not installed")
+    pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
+    monkeypatch.setenv("ORCHESTRATOR_DBT_PROJECT_DIR", str(tmp_path))
+    _clear_phase0_imports()
+
+    try:
+        with pytest.raises(FileNotFoundError, match="dbt compile|prepare"):
+            __import__("orchestrator.jobs.phase0", fromlist=["phase0"])
+    finally:
+        _clear_phase0_imports()
+
+
+def _clear_phase0_imports() -> None:
+    for module_name in list(sys.modules):
+        if module_name == "orchestrator.jobs":
+            sys.modules.pop(module_name, None)
+        elif module_name.startswith("orchestrator.jobs."):
+            sys.modules.pop(module_name, None)

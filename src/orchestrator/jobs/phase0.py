@@ -25,12 +25,24 @@ DBT_PROFILES_DIR = DBT_PROJECT_DIR
 DBT_MANIFEST_PATH = DBT_PROJECT_DIR / "target" / "manifest.json"
 
 
+def _require_dbt_manifest(manifest_path: Path) -> Path:
+    if not manifest_path.exists():
+        msg = (
+            "dbt manifest is missing at "
+            f"{manifest_path}. Run `dbt compile --project-dir "
+            f"{DBT_PROJECT_DIR} --profiles-dir {DBT_PROFILES_DIR}` or prepare "
+            "the dbt fixture before importing orchestrator.definitions."
+        )
+        raise FileNotFoundError(msg)
+    return manifest_path
+
+
 @asset(group_name=PHASE0_GROUP_NAME)
 def phase0_readiness_ping() -> str:
     return "ok"
 
 
-@dbt_assets(manifest=DBT_MANIFEST_PATH)
+@dbt_assets(manifest=_require_dbt_manifest(DBT_MANIFEST_PATH))
 def dbt_phase0_assets(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
