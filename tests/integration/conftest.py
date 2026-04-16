@@ -112,16 +112,18 @@ def require_integration_module(module_name: str, package_name: str) -> ModuleTyp
     try:
         return import_module(module_name)
     except ModuleNotFoundError as exc:
-        pytest.skip(
+        pytest.fail(
             f"{package_name} is required for tests/integration; "
             "install the project dev dependencies before running this target. "
             f"Original import error: {exc}",
+            pytrace=False,
         )
     except Exception as exc:
-        pytest.skip(
+        pytest.fail(
             f"{package_name} could not be imported for tests/integration; "
             "install a compatible integration toolchain before running this target. "
             f"Original import error: {type(exc).__name__}: {exc}",
+            pytrace=False,
         )
 
 
@@ -141,6 +143,25 @@ def asset_materialization_keys(result: object) -> set[object]:
             asset_key = getattr(materialization, "asset_key", None)
         if asset_key is not None:
             keys.add(asset_key)
+    return keys
+
+
+def materialization_order(result: object) -> list[object]:
+    keys: list[object] = []
+    for event in _result_events(result):
+        if not (
+            getattr(event, "is_step_materialization", False)
+            or getattr(event, "event_type_value", None) == "ASSET_MATERIALIZATION"
+        ):
+            continue
+
+        asset_key = getattr(event, "asset_key", None)
+        if asset_key is None:
+            event_specific_data = getattr(event, "event_specific_data", None)
+            materialization = getattr(event_specific_data, "materialization", None)
+            asset_key = getattr(materialization, "asset_key", None)
+        if asset_key is not None:
+            keys.append(asset_key)
     return keys
 
 
