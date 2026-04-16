@@ -118,6 +118,10 @@ def test_phase2_single_stock_inconclusive_check_does_not_block_daily_cycle(
     assert dagster.AssetKey(["phase2_stock_MSFT"]) in materialized_keys
     assert getattr(evaluation, "passed", None) is False
     assert metadata_value(evaluation, "action") == "mark_inconclusive"
+    assert (
+        metadata_value(evaluation, "scenario_id")
+        == "phase2_single_stock_task_failed"
+    )
     assert metadata_value(evaluation, "stock_id") == "AAPL"
     assert metadata_value(evaluation, "failure_rate") == 0.1
 

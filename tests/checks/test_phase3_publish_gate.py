@@ -46,6 +46,7 @@ def test_classify_formal_commit_failure_uses_phase3_publish_policy(
     assert decision.phase is PhaseEnum.PHASE3
     assert decision.failure_class is FailureClass.PUBLISH
     assert decision.action is GateAction.FAIL_RUN
+    assert decision.scenario_id == "phase3_formal_commit_failed"
     assert (
         decision.reason
         == "Formal table commit failed; fail Phase 3 before writing manifest."

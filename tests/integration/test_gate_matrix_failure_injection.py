@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import sys
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
-from orchestrator.policy import REQUIRED_GATE_MATRIX_SCENARIOS
+from orchestrator.alerting import runbook_url_for
+from orchestrator.checks import dispatch_gate_decision_alert
+from orchestrator.policy import (
+    FailureClass,
+    REQUIRED_GATE_MATRIX_SCENARIOS,
+    load_gate_policy,
+)
 from tests.integration.conftest import metadata_value
 from tests.integration.failure_injection import (
     PHASE2_DOWNSTREAM_PUBLISH_ASSET_KEY,
@@ -14,9 +23,12 @@ from tests.integration.failure_injection import (
     PHASE3_MANIFEST_ASSET_KEY,
     REPAIR_MANIFEST_ASSET_KEY,
     FailureInjectionCase,
+    alert_payloads,
     asset_selection_strings,
     gate_matrix_failure_cases,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(
@@ -92,9 +104,14 @@ def _assert_required_alert_payload(
     assert alert["phase"] == case.phase
     assert alert["action"] == case.expected_action
     assert alert["failure_class"] == case.expected_failure_class
+    assert alert["scenario_id"] == case.scenario_id
     assert alert["failed_node"] == expected_failed_node
-    assert isinstance(alert["runbook_url"], str)
-    assert alert["runbook_url"]
+    assert alert["runbook_url"] == runbook_url_for(
+        case.phase,
+        case.expected_failure_class,
+        case.expected_action,
+        scenario_id=case.scenario_id,
+    )
 
 
 def _assert_materialization_expectations(
@@ -127,6 +144,10 @@ def _assert_scenario_specifics(
         assert getattr(evaluation, "passed", None) is False
         assert metadata_value(evaluation, "action") == "fail_run"
         assert metadata_value(evaluation, "failure_class") == "infra"
+        assert (
+            metadata_value(evaluation, "scenario_id")
+            == "phase0_llm_health_check_failed"
+        )
         return
 
     if scenario_id == "phase0_dbt_test_failed":
@@ -144,6 +165,10 @@ def _assert_scenario_specifics(
         assert outcome.success is True
         assert getattr(evaluation, "passed", None) is False
         assert metadata_value(evaluation, "action") == "mark_inconclusive"
+        assert (
+            metadata_value(evaluation, "scenario_id")
+            == "phase2_single_stock_task_failed"
+        )
         assert metadata_value(evaluation, "stock_id") == "AAPL"
         assert metadata_value(evaluation, "failure_rate") == 0.1
         return
@@ -152,6 +177,10 @@ def _assert_scenario_specifics(
         evaluation = outcome.evaluations[0]
         assert getattr(evaluation, "passed", None) is False
         assert metadata_value(evaluation, "action") == "fail_run"
+        assert (
+            metadata_value(evaluation, "scenario_id")
+            == "phase2_pool_failure_rate_exceeded"
+        )
         assert metadata_value(evaluation, "failure_rate") == 0.4
         assert dagster.AssetKey([PHASE2_STAGE_KEYS[-1]]) in outcome.materialized_keys
         assert dagster.AssetKey([PHASE2_DOWNSTREAM_PUBLISH_ASSET_KEY]) not in (
@@ -163,6 +192,7 @@ def _assert_scenario_specifics(
         evaluation = outcome.evaluations[0]
         assert getattr(evaluation, "passed", None) is False
         assert metadata_value(evaluation, "action") == "fail_run"
+        assert metadata_value(evaluation, "scenario_id") == "phase3_formal_commit_failed"
         assert dagster.AssetKey([PHASE3_FORMAL_COMMIT_ASSET_KEY]) in (
             outcome.materialized_keys
         )
@@ -191,10 +221,12 @@ def _assert_dbt_failure_request(outcome: object) -> None:
 
     assert metadata_value(gate_observation, "action") == "partial_rerun"
     assert metadata_value(gate_observation, "failure_class") == "task_level"
+    assert metadata_value(gate_observation, "scenario_id") == "phase0_dbt_test_failed"
     assert metadata_value(gate_observation, "failed_node") == outcome.failed_node
     assert request == expected_request
     assert request["rerun_selection"] == [outcome.failed_node]
     assert request["rerun_mode"] == "asset_only"
+    assert request["scenario_id"] == "phase0_dbt_test_failed"
 
 
 def _assert_manifest_repair_request(dagster: object, outcome: object) -> None:
@@ -205,6 +237,7 @@ def _assert_manifest_repair_request(dagster: object, outcome: object) -> None:
     assert request["failed_node"] == PHASE3_MANIFEST_ASSET_KEY
     assert request["rerun_selection"] == [REPAIR_MANIFEST_ASSET_KEY]
     assert request["rerun_mode"] == "repair_only"
+    assert request["scenario_id"] == "phase3_manifest_write_failed"
     assert request["requires_manual_ack"] is True
     assert PHASE3_FORMAL_COMMIT_ASSET_KEY not in request["rerun_selection"]
     assert isinstance(outcome.run_request, dagster.RunRequest)
@@ -224,6 +257,63 @@ def _single_alert_for_failed_node(
     ]
     assert len(matches) == 1
     return matches[0]
+
+
+def test_infra_unavailable_alerts_use_scenario_runbook_for_each_applies_phase(
+    stub_policy_path: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    infra = _load_infra_module()
+    policy = load_gate_policy(stub_policy_path)
+    entry = next(
+        entry
+        for entry in policy.phase_matrix
+        if entry.scenario_id == infra.INFRA_UNAVAILABLE_HARD_STOP_SCENARIO_ID
+    )
+
+    assert entry.applies_to_phases is not None
+    for phase in entry.applies_to_phases:
+        caplog.clear()
+        decision = infra.classify_infrastructure_failure(
+            phase,
+            infra.InfrastructureUnavailableEvent(
+                resource_key=f"{phase.value}_core_store",
+                phase=phase,
+                reason="unavailable",
+            ),
+            policy,
+        )
+
+        dispatch_gate_decision_alert(
+            decision,
+            cycle_id="cycle-20260416",
+            failed_node=f"{phase.value}_core_store",
+            summary="core store unavailable",
+            channels=("logging",),
+        )
+
+        alert = _single_alert_for_failed_node(
+            tuple(alert_payloads(caplog.records)),
+            f"{phase.value}_core_store",
+        )
+        assert alert["phase"] == phase.value
+        assert alert["action"] == "fail_run"
+        assert alert["failure_class"] == FailureClass.INFRA.value
+        assert alert["scenario_id"] == infra.INFRA_UNAVAILABLE_HARD_STOP_SCENARIO_ID
+        assert alert["runbook_url"] == "docs/RUNBOOK_P5.md#phase2-infra-fail_run"
+
+
+def _load_infra_module() -> ModuleType:
+    spec = spec_from_file_location(
+        "_orchestrator_test_infra",
+        REPO_ROOT / "src/orchestrator/resources/infra.py",
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load orchestrator resources infra module")
+    module = module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _single_rerun_request(outcome: object) -> dict[str, object]:

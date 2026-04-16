@@ -15,7 +15,7 @@ DEFAULT_REQUEST_DIR: Final[str] = ".orchestrator/rerun_requests"
 
 
 def request_from_plan(plan: PartialRerunPlan) -> dict[str, Any]:
-    return {
+    payload = {
         "run_id": plan.run_id,
         "failed_node": plan.failed_node,
         "rerun_selection": list(plan.rerun_selection),
@@ -23,6 +23,9 @@ def request_from_plan(plan: PartialRerunPlan) -> dict[str, Any]:
         "rerun_mode": plan.rerun_mode,
         "generated_at": plan.generated_at.isoformat(),
     }
+    if plan.scenario_id is not None:
+        payload["scenario_id"] = plan.scenario_id
+    return payload
 
 
 def request_filename(run_id: str, failed_node: str) -> str:

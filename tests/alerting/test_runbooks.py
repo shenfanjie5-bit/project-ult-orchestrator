@@ -70,6 +70,23 @@ def test_with_runbook_url_fills_missing_url_without_mutating_payload() -> None:
     )
 
 
+def test_with_runbook_url_uses_payload_scenario_id() -> None:
+    payload = AlertPayload(
+        cycle_id="c1",
+        phase="phase1",
+        status="failed",
+        failed_node="graph_store",
+        action="fail_run",
+        summary="infra unavailable",
+        failure_class="infra",
+        scenario_id="infra_unavailable_hard_stop",
+    )
+
+    enriched = with_runbook_url(payload)
+
+    assert enriched.runbook_url == "docs/RUNBOOK_P5.md#phase2-infra-fail_run"
+
+
 def test_with_runbook_url_preserves_explicit_url() -> None:
     payload = AlertPayload(
         cycle_id="c1",

@@ -28,6 +28,7 @@ class PartialRerunPlan:
     requires_manual_ack: bool
     generated_at: datetime
     rerun_mode: RerunMode
+    scenario_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +94,7 @@ def compute_partial_rerun_plan(
         requires_manual_ack=rerun_mode != "asset_only",
         generated_at=datetime.now(timezone.utc),
         rerun_mode=rerun_mode,
+        scenario_id=entry.scenario_id,
     )
 
 

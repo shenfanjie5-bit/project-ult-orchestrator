@@ -22,6 +22,7 @@ class GateDecisionDiagnostic:
     phase: str
     failure_class: str | None
     action: str
+    scenario_id: str | None
     failed_node: str | None
     summary: str | None
     runbook_url: str | None
@@ -35,6 +36,7 @@ class RerunPlanDiagnostic:
     requires_manual_ack: bool
     rerun_mode: str
     generated_at: str
+    scenario_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +111,7 @@ def run_diagnostic_to_dict(summary: RunDiagnosticSummary) -> dict[str, object]:
                 "phase": decision.phase,
                 "failure_class": decision.failure_class,
                 "action": decision.action,
+                "scenario_id": decision.scenario_id,
                 "failed_node": decision.failed_node,
                 "summary": decision.summary,
                 "runbook_url": decision.runbook_url,
@@ -123,6 +126,7 @@ def run_diagnostic_to_dict(summary: RunDiagnosticSummary) -> dict[str, object]:
                 "requires_manual_ack": plan.requires_manual_ack,
                 "rerun_mode": plan.rerun_mode,
                 "generated_at": plan.generated_at,
+                "scenario_id": plan.scenario_id,
             }
             for plan in summary.rerun_plans
         ],
@@ -224,6 +228,7 @@ def _gate_decisions_for_runs(
                     decision.phase,
                     decision.failure_class,
                     decision.action,
+                    decision.scenario_id,
                     decision.failed_node,
                     decision.summary,
                 )
@@ -280,6 +285,7 @@ def _gate_decisions_from_record(
             continue
 
         failure_class = _optional_string(metadata.get("failure_class"))
+        scenario_id = _optional_string(metadata.get("scenario_id"))
         failed_node = _failed_node(metadata, owner, event)
         phase = (
             _optional_string(metadata.get("phase"))
@@ -292,6 +298,7 @@ def _gate_decisions_from_record(
             phase=phase,
             failure_class=failure_class,
             action=action,
+            scenario_id=scenario_id,
         )
 
         decisions.append(
@@ -300,6 +307,7 @@ def _gate_decisions_from_record(
                 phase=phase,
                 failure_class=failure_class,
                 action=action,
+                scenario_id=scenario_id,
                 failed_node=failed_node,
                 summary=summary,
                 runbook_url=runbook_url,
@@ -499,13 +507,14 @@ def _diagnostic_runbook_url(
     phase: str,
     failure_class: str | None,
     action: str,
+    scenario_id: str | None,
 ) -> str | None:
     explicit = _optional_string(metadata.get("runbook_url"))
     if explicit:
         return explicit
     if action == "continue" or phase == "unknown":
         return None
-    return runbook_url_for(phase, failure_class, action)
+    return runbook_url_for(phase, failure_class, action, scenario_id=scenario_id)
 
 
 def _rerun_plans_from_request_dir(
@@ -554,6 +563,7 @@ def _rerun_plan_from_request_path(path: Path) -> RerunPlanDiagnostic | None:
                 raw_payload.get("generated_at"),
                 "generated_at",
             ),
+            scenario_id=_optional_string(raw_payload.get("scenario_id")),
         )
     except (TypeError, ValueError):
         return None
