@@ -45,10 +45,14 @@ def test_data_platform_provider_contributes_phase0_surface(
     assert dbt_phase0_keys <= selected_keys
     assert "fake_data_platform_phase0_check" in _check_names(defs)
     assert "fake_data_platform_resource" in defs.resources
+    assert "llm_health_probe" in defs.resources
 
     bundle = defs.resources["resource_bundle"]
     assert isinstance(bundle, ResourceBundle)
-    assert bundle.resource_keys == ("fake_data_platform_resource",)
+    assert bundle.resource_keys == (
+        "fake_data_platform_resource",
+        "llm_health_probe",
+    )
     assert bundle.source_modules == (__name__,)
     assert bundle.config_ref == stub_policy_path
     assert bundle.read_only is True
@@ -102,6 +106,19 @@ def _fake_data_platform_provider(
         def create_resource(self, context: object) -> dict[str, str]:
             return {"source": "fake-provider"}
 
+    class FakeLLMHealthResult:
+        healthy = True
+        summary = "provider ready"
+        provider = "fake-llm"
+
+    class FakeLLMHealthProbe:
+        def check_health(self) -> FakeLLMHealthResult:
+            return FakeLLMHealthResult()
+
+    class FakeLLMHealthProbeResource(dagster.ConfigurableResource):
+        def create_resource(self, context: object) -> FakeLLMHealthProbe:
+            return FakeLLMHealthProbe()
+
     @dagster.asset(
         name="candidate_freeze",
         group_name=candidate_group,
@@ -135,7 +152,11 @@ def _fake_data_platform_provider(
                 "fake_data_platform_resource": cast(
                     object,
                     FakeDataPlatformResource(),
-                )
+                ),
+                "llm_health_probe": cast(
+                    object,
+                    FakeLLMHealthProbeResource(),
+                ),
             }
 
     return (
