@@ -106,6 +106,7 @@ def test_build_definitions_temporal_backend_registers_phase0_entrypoint(
     tmp_path: Path,
 ) -> None:
     build_definitions = definitions_exports["build_definitions"]
+    Definitions = definitions_exports["Definitions"]
     dagster = definitions_exports["dagster"]
     policy_path = _policy_with_backend(tmp_path, "dagster_plus_temporal")
 
@@ -113,6 +114,7 @@ def test_build_definitions_temporal_backend_registers_phase0_entrypoint(
         module_factories=[_fake_provider(dagster)],
         policy_path=policy_path,
     )
+    Definitions.validate_loadable(defs)
 
     assert _job_names(defs) == {
         "daily_cycle_phase0_job",
@@ -128,6 +130,10 @@ def test_build_definitions_temporal_backend_registers_phase0_entrypoint(
         sensor.name for sensor in defs.sensors or ()
     }
     assert "temporal_handoff_client" not in defs.resources
+    assert _sensor_by_name(
+        defs,
+        "temporal_handoff_sensor",
+    ).required_resource_keys <= set(defs.resources)
 
 
 def test_build_definitions_backs_data_readiness_sensor_resources(
