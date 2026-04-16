@@ -1,11 +1,14 @@
 """Pydantic schema for gate policy profiles."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from orchestrator.policy.contracts_adapter import FailureClass, GateAction, PhaseEnum
+
+
+RerunMode: TypeAlias = Literal["repair_only", "asset_only", "phase_only"]
 
 
 class PhaseMatrixEntry(BaseModel):
@@ -18,6 +21,7 @@ class PhaseMatrixEntry(BaseModel):
     action: GateAction
     allow_partial_rerun: bool
     description: str
+    rerun_mode: RerunMode | None = None
 
 
 class GatePolicyProfile(BaseModel):
@@ -49,4 +53,4 @@ class GatePolicyProfile(BaseModel):
         return self
 
 
-__all__ = ["GatePolicyProfile", "PhaseMatrixEntry"]
+__all__ = ["GatePolicyProfile", "PhaseMatrixEntry", "RerunMode"]
