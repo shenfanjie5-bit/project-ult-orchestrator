@@ -53,34 +53,55 @@ def stream_dbt_build_events(
 ) -> Iterator[object]:
     """Stream dbt events and handle failed dbt tests through the gate pipeline."""
 
-    failure_event: object | None = None
+    failure_events: list[object] = []
     try:
         for event in _stream_dbt_invocation(dbt_invocation):
-            if failure_event is None:
-                failure_event = _dbt_test_failure_from_stream_event(event)
+            failure_event = _dbt_test_failure_from_stream_event(event)
+            if failure_event is not None:
+                _append_unique_dbt_failure_event(failure_events, failure_event)
             yield event
     except Exception:
-        failure_event = failure_event or _dbt_test_failure_from_artifacts(
-            dbt_invocation,
-            manifest_path=manifest_path,
+        _append_unique_dbt_failure_events(
+            failure_events,
+            _dbt_test_failures_from_artifacts(
+                dbt_invocation,
+                manifest_path=manifest_path,
+            ),
         )
-        if failure_event is not None:
-            handle_dbt_test_failure(
-                context=context,
-                event=failure_event,
-                policy=policy,
-                request_dir=request_dir,
-            )
+        _handle_dbt_test_failures(
+            context=context,
+            events=failure_events,
+            policy=policy,
+            request_dir=request_dir,
+        )
         raise
 
-    failure_event = failure_event or _dbt_test_failure_from_artifacts(
-        dbt_invocation,
-        manifest_path=manifest_path,
+    _append_unique_dbt_failure_events(
+        failure_events,
+        _dbt_test_failures_from_artifacts(
+            dbt_invocation,
+            manifest_path=manifest_path,
+        ),
     )
-    if failure_event is not None:
+    _handle_dbt_test_failures(
+        context=context,
+        events=failure_events,
+        policy=policy,
+        request_dir=request_dir,
+    )
+
+
+def _handle_dbt_test_failures(
+    *,
+    context: object,
+    events: Sequence[object],
+    policy: GatePolicyProfile,
+    request_dir: str | Path | None,
+) -> None:
+    for event in events:
         handle_dbt_test_failure(
             context=context,
-            event=failure_event,
+            event=event,
             policy=policy,
             request_dir=request_dir,
         )
@@ -229,9 +250,21 @@ def _dbt_test_failure_from_artifacts(
     *,
     manifest_path: str | Path | None,
 ) -> object | None:
+    failure_events = _dbt_test_failures_from_artifacts(
+        dbt_invocation,
+        manifest_path=manifest_path,
+    )
+    return failure_events[0] if failure_events else None
+
+
+def _dbt_test_failures_from_artifacts(
+    dbt_invocation: object,
+    *,
+    manifest_path: str | Path | None,
+) -> tuple[object, ...]:
     run_results = _dbt_artifact(dbt_invocation, "run_results.json")
     if not isinstance(run_results, Mapping):
-        return None
+        return ()
 
     manifest = _dbt_artifact(
         dbt_invocation,
@@ -239,21 +272,50 @@ def _dbt_test_failure_from_artifacts(
         fallback_path=manifest_path,
     )
     if not isinstance(manifest, Mapping):
-        return None
+        return ()
 
     results = run_results.get("results")
     if not isinstance(results, Sequence) or isinstance(results, (bytes, str)):
-        return None
+        return ()
 
+    failure_events: list[object] = []
     for result in results:
         if not _is_failed_dbt_test_result(result, manifest):
             continue
 
         event = _gate_event_from_dbt_result(result, manifest)
         if event is not None:
-            return event
+            _append_unique_dbt_failure_event(failure_events, event)
 
-    return None
+    return tuple(failure_events)
+
+
+def _append_unique_dbt_failure_events(
+    target: list[object],
+    events: Sequence[object],
+) -> None:
+    for event in events:
+        _append_unique_dbt_failure_event(target, event)
+
+
+def _append_unique_dbt_failure_event(target: list[object], event: object) -> None:
+    identity = _dbt_failure_identity(event)
+    if any(_dbt_failure_identity(existing) == identity for existing in target):
+        return
+
+    target.append(event)
+
+
+def _dbt_failure_identity(event: object) -> tuple[str, str]:
+    asset_key = _extract_asset_key(event)
+    if asset_key is not None:
+        return ("asset", asset_key)
+
+    node_name = _extract_dbt_node_name(event)
+    if node_name is not None:
+        return ("node", node_name)
+
+    return ("event", str(id(event)))
 
 
 def _dbt_artifact(

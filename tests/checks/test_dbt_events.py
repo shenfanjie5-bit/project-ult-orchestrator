@@ -72,6 +72,38 @@ class FailingDbtInvocation:
         raise KeyError(artifact_name)
 
 
+class MultiFailingDbtInvocation:
+    def stream(self) -> Any:
+        yield {"event": "dbt build started"}
+        raise RuntimeError("dbt build failed")
+
+    def get_artifact(self, artifact_name: str) -> object:
+        if artifact_name == "run_results.json":
+            return {
+                "results": [
+                    {
+                        "status": "fail",
+                        "unique_id": (
+                            "test.orchestrator_stub."
+                            "not_null_heartbeat_heartbeat"
+                        ),
+                        "message": "heartbeat is null",
+                    },
+                    {
+                        "status": "error",
+                        "unique_id": (
+                            "test.orchestrator_stub."
+                            "not_null_second_model_second_model"
+                        ),
+                        "message": "second_model test errored",
+                    },
+                ],
+            }
+        if artifact_name == "manifest.json":
+            return _manifest_for_two_failed_assets()
+        raise KeyError(artifact_name)
+
+
 @pytest.fixture
 def gate_policy() -> Any:
     return load_gate_policy(LITE_POLICY_PATH)
@@ -153,6 +185,44 @@ def test_stream_dbt_build_events_handles_failed_test_artifact(
     assert payload["failure_class"] == "task_level"
     assert request_payload["failed_node"] == "heartbeat"
     assert request_payload["rerun_selection"] == ["heartbeat"]
+
+
+def test_stream_dbt_build_events_handles_each_failed_asset_from_artifacts(
+    caplog: pytest.LogCaptureFixture,
+    gate_policy: Any,
+    tmp_path: Path,
+) -> None:
+    stream = stream_dbt_build_events(
+        context=FakeDagsterContext(),
+        dbt_invocation=MultiFailingDbtInvocation(),
+        policy=gate_policy,
+        request_dir=tmp_path,
+    )
+
+    assert next(stream) == {"event": "dbt build started"}
+    with caplog.at_level(logging.WARNING), pytest.raises(
+        RuntimeError,
+        match="dbt build failed",
+    ):
+        next(stream)
+
+    alert_failed_nodes = {
+        payload["failed_node"]
+        for payload in _alert_payloads(caplog)
+        if payload["action"] == "partial_rerun"
+    }
+    request_payloads = {
+        payload["failed_node"]: payload
+        for payload in (
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in tmp_path.glob("*.json")
+        )
+    }
+
+    assert alert_failed_nodes == {"heartbeat", "second_model"}
+    assert set(request_payloads) == {"heartbeat", "second_model"}
+    assert request_payloads["heartbeat"]["rerun_selection"] == ["heartbeat"]
+    assert request_payloads["second_model"]["rerun_selection"] == ["second_model"]
 
 
 def test_write_dbt_partial_rerun_request_is_atomically_published(
@@ -370,6 +440,42 @@ def _manifest_for_heartbeat_test() -> dict[str, object]:
                 "resource_type": "model",
                 "name": "heartbeat",
                 "unique_id": model_unique_id,
+            },
+        },
+    }
+
+
+def _manifest_for_two_failed_assets() -> dict[str, object]:
+    heartbeat_test_unique_id = "test.orchestrator_stub.not_null_heartbeat_heartbeat"
+    heartbeat_model_unique_id = "model.orchestrator_stub.heartbeat"
+    second_test_unique_id = (
+        "test.orchestrator_stub.not_null_second_model_second_model"
+    )
+    second_model_unique_id = "model.orchestrator_stub.second_model"
+
+    return {
+        "nodes": {
+            heartbeat_test_unique_id: {
+                "resource_type": "test",
+                "name": "not_null_heartbeat_heartbeat",
+                "unique_id": heartbeat_test_unique_id,
+                "depends_on": {"nodes": [heartbeat_model_unique_id]},
+            },
+            heartbeat_model_unique_id: {
+                "resource_type": "model",
+                "name": "heartbeat",
+                "unique_id": heartbeat_model_unique_id,
+            },
+            second_test_unique_id: {
+                "resource_type": "test",
+                "name": "not_null_second_model_second_model",
+                "unique_id": second_test_unique_id,
+                "depends_on": {"nodes": [second_model_unique_id]},
+            },
+            second_model_unique_id: {
+                "resource_type": "model",
+                "name": "second_model",
+                "unique_id": second_model_unique_id,
             },
         },
     }
