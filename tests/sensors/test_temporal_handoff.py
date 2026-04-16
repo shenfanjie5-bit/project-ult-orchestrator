@@ -221,7 +221,7 @@ def test_missing_handoff_client_defaults_to_failed_over(
     assert "not configured" in result.tags["temporal_handoff_reason"]
 
 
-def test_temporal_handoff_sensor_declares_client_discovery_resources(
+def test_temporal_handoff_sensor_declares_optional_client_discovery_resources(
     temporal_sensor_exports: dict[str, Any],
 ) -> None:
     required_resource_keys = temporal_sensor_exports[
@@ -235,7 +235,7 @@ def test_temporal_handoff_sensor_declares_client_discovery_resources(
     )
     assert (
         temporal_sensor_exports["TEMPORAL_HANDOFF_CLIENT_RESOURCE_KEY"]
-        in required_resource_keys
+        not in required_resource_keys
     )
 
 
