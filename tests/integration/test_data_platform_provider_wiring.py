@@ -15,6 +15,12 @@ def test_data_platform_provider_contributes_phase0_surface(
     pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
 
     from orchestrator.definitions import build_definitions
+    from orchestrator.jobs.cycle import daily_cycle_job
+    from orchestrator.jobs.phase0 import (
+        PHASE0_GROUP_NAME,
+        dbt_phase0_assets,
+        phase0_readiness_ping,
+    )
     from orchestrator.resources import ResourceBundle
 
     provider, fake_asset, _fake_check = _fake_data_platform_provider(dagster)
@@ -25,7 +31,18 @@ def test_data_platform_provider_contributes_phase0_surface(
 
     dagster.Definitions.validate_loadable(defs)
 
-    assert dagster.AssetKey(["fake_data_platform_phase0_asset"]) in _asset_keys(defs)
+    candidate_freeze_key = dagster.AssetKey(["candidate_freeze"])
+    selected_keys = daily_cycle_job.selection.resolve(
+        [phase0_readiness_ping, dbt_phase0_assets, fake_asset],
+    )
+    dbt_phase0_keys = set(dbt_phase0_assets.keys)
+
+    assert candidate_freeze_key in _asset_keys(defs)
+    assert fake_asset.group_names_by_key[candidate_freeze_key] == PHASE0_GROUP_NAME
+    assert dagster.AssetKey(["phase0_readiness_ping"]) in selected_keys
+    assert candidate_freeze_key in selected_keys
+    assert dbt_phase0_keys
+    assert dbt_phase0_keys <= selected_keys
     assert "fake_data_platform_phase0_check" in _check_names(defs)
     assert "fake_data_platform_resource" in defs.resources
 
@@ -50,27 +67,57 @@ def test_data_platform_provider_contributes_phase0_surface(
     assert result.success is True
 
 
-def _fake_data_platform_provider(dagster: Any) -> tuple[object, object, object]:
+def test_candidate_freeze_group_mismatch_is_rejected(
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = pytest.importorskip("dagster", reason="dagster is not installed")
+    pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
+
+    from orchestrator.definitions import build_definitions
+
+    provider, _fake_asset, _fake_check = _fake_data_platform_provider(
+        dagster,
+        candidate_group="not_phase0",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "candidate_freeze asset must declare "
+            "group_name='phase0'; got 'not_phase0'"
+        ),
+    ):
+        build_definitions(
+            module_factories=[provider],
+            policy_path=stub_policy_path,
+        )
+
+
+def _fake_data_platform_provider(
+    dagster: Any,
+    candidate_group: str = "phase0",
+) -> tuple[object, object, object]:
     class FakeDataPlatformResource(dagster.ConfigurableResource):
         def create_resource(self, context: object) -> dict[str, str]:
             return {"source": "fake-provider"}
 
     @dagster.asset(
-        name="fake_data_platform_phase0_asset",
-        group_name="phase0",
+        name="candidate_freeze",
+        group_name=candidate_group,
         required_resource_keys={
             "fake_data_platform_resource",
             "resource_bundle",
         },
     )
-    def fake_data_platform_phase0_asset(context: object) -> str:
+    def candidate_freeze(context: object) -> str:
         fake_resource = context.resources.fake_data_platform_resource
         bundle = context.resources.resource_bundle
         assert bundle.read_only is True
         return fake_resource["source"]
 
     @dagster.asset_check(
-        asset=fake_data_platform_phase0_asset,
+        asset=candidate_freeze,
         name="fake_data_platform_phase0_check",
     )
     def fake_data_platform_phase0_check() -> object:
@@ -78,7 +125,7 @@ def _fake_data_platform_provider(dagster: Any) -> tuple[object, object, object]:
 
     class FakeDataPlatformProvider:
         def get_assets(self) -> tuple[object, ...]:
-            return (fake_data_platform_phase0_asset,)
+            return (candidate_freeze,)
 
         def get_checks(self) -> tuple[object, ...]:
             return (fake_data_platform_phase0_check,)
@@ -93,7 +140,7 @@ def _fake_data_platform_provider(dagster: Any) -> tuple[object, object, object]:
 
     return (
         FakeDataPlatformProvider(),
-        fake_data_platform_phase0_asset,
+        candidate_freeze,
         fake_data_platform_phase0_check,
     )
 

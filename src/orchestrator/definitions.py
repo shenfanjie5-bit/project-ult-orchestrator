@@ -6,7 +6,7 @@ import os
 from collections.abc import Iterable
 from pathlib import Path
 
-from dagster import Definitions
+from dagster import AssetKey, Definitions
 from dagster_dbt import DbtCliResource
 
 from orchestrator.checks import GatePolicyResource, phase0_ping_check
@@ -14,6 +14,8 @@ from orchestrator.jobs.cycle import daily_cycle_job
 from orchestrator.jobs.phase0 import (
     DBT_PROFILES_DIR,
     DBT_PROJECT_DIR,
+    PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+    PHASE0_GROUP_NAME,
     dbt_phase0_assets,
     phase0_readiness_ping,
 )
@@ -46,6 +48,7 @@ def build_definitions(
         for module_factory in module_factory_list
         for asset in module_factory.get_assets()
     ]
+    _validate_phase0_provider_assets(provider_assets)
     provider_checks = [
         check
         for module_factory in module_factory_list
@@ -75,6 +78,23 @@ def build_definitions(
             **resource_bundle.resources,
         },
     )
+
+
+def _validate_phase0_provider_assets(provider_assets: Iterable[object]) -> None:
+    candidate_freeze_key = AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY])
+
+    for asset_def in provider_assets:
+        if candidate_freeze_key not in getattr(asset_def, "keys", ()):
+            continue
+
+        group_name = getattr(asset_def, "group_names_by_key", {}).get(
+            candidate_freeze_key,
+        )
+        if group_name != PHASE0_GROUP_NAME:
+            raise ValueError(
+                "candidate_freeze asset must declare "
+                f"group_name={PHASE0_GROUP_NAME!r}; got {group_name!r}",
+            )
 
 
 defs = build_definitions()

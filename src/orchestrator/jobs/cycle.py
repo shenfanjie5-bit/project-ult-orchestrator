@@ -5,10 +5,12 @@ from typing import Any
 
 from dagster import AssetSelection, define_asset_job
 
+from orchestrator.jobs.phase0_constants import PHASE0_GROUP_NAME
+
 
 daily_cycle_job = define_asset_job(
     name="daily_cycle_job",
-    selection=AssetSelection.groups("phase0"),
+    selection=AssetSelection.groups(PHASE0_GROUP_NAME),
 )
 
 

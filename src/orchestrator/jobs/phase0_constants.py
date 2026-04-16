@@ -1,0 +1,16 @@
+"""Phase 0 asset group constants."""
+
+PHASE0_GROUP_NAME: str = "phase0"
+PHASE0_READINESS_ASSET_KEY: str = "phase0_readiness_ping"
+PHASE0_CANDIDATE_FREEZE_ASSET_KEY: str = "candidate_freeze"
+PHASE0_REQUIRED_ASSET_KEYS: tuple[str, ...] = (
+    PHASE0_READINESS_ASSET_KEY,
+    PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+)
+
+__all__ = [
+    "PHASE0_CANDIDATE_FREEZE_ASSET_KEY",
+    "PHASE0_GROUP_NAME",
+    "PHASE0_READINESS_ASSET_KEY",
+    "PHASE0_REQUIRED_ASSET_KEYS",
+]
