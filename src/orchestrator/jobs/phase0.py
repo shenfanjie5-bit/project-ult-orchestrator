@@ -9,6 +9,8 @@ from typing import Iterator
 from dagster import AssetExecutionContext, asset
 from dagster_dbt import DbtCliResource, dbt_assets
 
+from orchestrator.checks.dbt_events import stream_dbt_build_events
+from orchestrator.checks.resources import GatePolicyResource
 from orchestrator.jobs.phase0_constants import (
     PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
     PHASE0_GROUP_NAME,
@@ -46,8 +48,9 @@ def phase0_readiness_ping() -> str:
 def dbt_phase0_assets(
     context: AssetExecutionContext,
     dbt: DbtCliResource,
+    gate_policy: GatePolicyResource,
 ) -> Iterator[object]:
-    yield from dbt.cli(
+    dbt_invocation = dbt.cli(
         [
             "build",
             "--project-dir",
@@ -56,7 +59,13 @@ def dbt_phase0_assets(
             str(DBT_PROFILES_DIR),
         ],
         context=context,
-    ).stream()
+    )
+    yield from stream_dbt_build_events(
+        context=context,
+        dbt_invocation=dbt_invocation,
+        policy=gate_policy.policy,
+        manifest_path=DBT_MANIFEST_PATH,
+    )
 
 
 __all__ = [

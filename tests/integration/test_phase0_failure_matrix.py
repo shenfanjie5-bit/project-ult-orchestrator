@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -176,6 +179,82 @@ def test_dbt_test_failure_matrix_plans_only_failed_dbt_asset_group(
     assert "candidate_freeze" not in plan.rerun_selection
 
 
+def test_dbt_test_failure_from_dagster_run_emits_gate_outputs(
+    dagster_module: object,
+    dagster_dbt_module: object,
+    dagster_instance: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    dagster = dagster_module
+    dagster_dbt = dagster_dbt_module
+    failing_project = _prepare_failing_dbt_project(tmp_path, tmp_dbt_project)
+    rerun_request_dir = tmp_path / "rerun_requests"
+    monkeypatch.setenv("ORCHESTRATOR_DBT_PROJECT_DIR", str(failing_project))
+    monkeypatch.setenv("ORCHESTRATOR_RERUN_REQUEST_DIR", str(rerun_request_dir))
+    _clear_phase0_imports()
+
+    try:
+        from orchestrator.checks.resources import GatePolicyResource
+        from orchestrator.jobs.phase0 import (
+            DBT_PROFILES_DIR,
+            DBT_PROJECT_DIR,
+            dbt_phase0_assets,
+        )
+
+        heartbeat_key = _heartbeat_asset_key(dbt_phase0_assets)
+        job = dagster.define_asset_job(
+            "dbt_failure_gate_job",
+            selection=dagster.AssetSelection.assets(heartbeat_key),
+        )
+        defs = dagster.Definitions(
+            assets=[dbt_phase0_assets],
+            jobs=[job],
+            resources={
+                "gate_policy": GatePolicyResource(policy_path=stub_policy_path),
+                "dbt": dagster_dbt.DbtCliResource(
+                    project_dir=str(DBT_PROJECT_DIR),
+                    profiles_dir=str(DBT_PROFILES_DIR),
+                ),
+            },
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = defs.get_job_def("dbt_failure_gate_job").execute_in_process(
+                instance=dagster_instance,
+                raise_on_error=False,
+            )
+    finally:
+        _clear_phase0_imports()
+
+    alert = _alert_payloads(caplog)[-1]
+    request_files = sorted(rerun_request_dir.glob("*.json"))
+    request_payload = json.loads(request_files[0].read_text(encoding="utf-8"))
+    observation = _gate_decision_observations(result)[-1]
+    heartbeat_node = heartbeat_key.to_user_string()
+
+    assert result.success is False
+    assert alert["cycle_id"] == _run_id_from_result(result)
+    assert alert["phase"] == "phase0"
+    assert alert["failed_node"] == heartbeat_node
+    assert alert["action"] == "partial_rerun"
+    assert alert["failure_class"] == "task_level"
+    assert request_payload["run_id"] == _run_id_from_result(result)
+    assert request_payload["failed_node"] == heartbeat_node
+    assert request_payload["rerun_selection"] == [heartbeat_node]
+    assert request_payload["requires_manual_ack"] is False
+    assert request_payload["rerun_mode"] == "asset_only"
+    assert metadata_value(observation, "phase") == "phase0"
+    assert metadata_value(observation, "action") == "partial_rerun"
+    assert metadata_value(observation, "failure_class") == "task_level"
+    assert json.loads(metadata_value(observation, "rerun_selection")) == [
+        heartbeat_node,
+    ]
+
+
 def test_manual_rerun_request_sensor_minimal_happy_path(
     dagster_module: object,
     tmp_path: Path,
@@ -256,3 +335,83 @@ def _heartbeat_asset_key(dbt_phase0_assets: object) -> object:
         if path and path[-1] == "heartbeat":
             return asset_key
     pytest.fail("dbt heartbeat model asset key was not registered")
+
+
+def _prepare_failing_dbt_project(tmp_path: Path, source_project: Path) -> Path:
+    project_dir = tmp_path / "failing_dbt_stub"
+    shutil.copytree(source_project, project_dir)
+    (project_dir / "models" / "phase0" / "heartbeat.sql").write_text(
+        "select cast(null as integer) as heartbeat\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            "dbt",
+            "compile",
+            "--profiles-dir",
+            ".",
+            "--project-dir",
+            ".",
+        ],
+        cwd=project_dir,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+        timeout=45,
+    )
+    if completed.returncode != 0:
+        pytest.fail(f"dbt compile failed for failing fixture:\n{completed.stdout}")
+
+    return project_dir
+
+
+def _gate_decision_observations(result: object) -> list[object]:
+    observations: list[object] = []
+    for event in tuple(getattr(result, "all_events", ())):
+        if not (
+            getattr(event, "is_asset_observation", False)
+            or getattr(event, "event_type_value", None) == "ASSET_OBSERVATION"
+        ):
+            continue
+
+        event_specific_data = getattr(event, "event_specific_data", None)
+        observation = getattr(event_specific_data, "asset_observation", None)
+        if observation is None:
+            observation = getattr(event_specific_data, "observation", None)
+        if observation is None:
+            observation = getattr(event, "asset_observation", None)
+        if observation is None:
+            continue
+        try:
+            action = metadata_value(observation, "action")
+        except KeyError:
+            continue
+        if action == "partial_rerun":
+            observations.append(observation)
+
+    return observations
+
+
+def _run_id_from_result(result: object) -> str:
+    run_id = getattr(result, "run_id", None)
+    if isinstance(run_id, str) and run_id:
+        return run_id
+
+    dagster_run = getattr(result, "dagster_run", None)
+    run_id = getattr(dagster_run, "run_id", None)
+    if isinstance(run_id, str) and run_id:
+        return run_id
+
+    pytest.fail("Dagster execute_in_process result did not expose run_id")
+
+
+def _clear_phase0_imports() -> None:
+    for module_name in list(sys.modules):
+        if module_name == "orchestrator.definitions":
+            sys.modules.pop(module_name, None)
+        elif module_name == "orchestrator.jobs":
+            sys.modules.pop(module_name, None)
+        elif module_name.startswith("orchestrator.jobs."):
+            sys.modules.pop(module_name, None)

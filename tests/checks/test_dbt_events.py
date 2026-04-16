@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 from inspect import signature
 from pathlib import Path
 from typing import Any
@@ -8,7 +10,9 @@ import pytest
 
 from orchestrator.checks.dbt_events import (
     classify_dbt_test_failure,
+    handle_dbt_test_failure,
     plan_dbt_test_partial_rerun,
+    stream_dbt_build_events,
 )
 from orchestrator.policy import FailureClass, GateAction, PhaseEnum, load_gate_policy
 from orchestrator.rerun import PartialRerunNotAllowed
@@ -30,6 +34,41 @@ class MissingMetadataEvent:
     pass
 
 
+class FakeDagsterContext:
+    run_id = "run-dbt"
+    run_tags = {"cycle_id": "cycle-dbt"}
+
+    def __init__(self) -> None:
+        self.logged_events: list[object] = []
+
+    def log_event(self, event: object) -> None:
+        self.logged_events.append(event)
+
+
+class FailingDbtInvocation:
+    def stream(self) -> Any:
+        yield {"event": "dbt build started"}
+        raise RuntimeError("dbt build failed")
+
+    def get_artifact(self, artifact_name: str) -> object:
+        if artifact_name == "run_results.json":
+            return {
+                "results": [
+                    {
+                        "status": "fail",
+                        "unique_id": (
+                            "test.orchestrator_stub."
+                            "not_null_heartbeat_heartbeat"
+                        ),
+                        "message": "Got 1 result, configured to fail if != 0",
+                    },
+                ],
+            }
+        if artifact_name == "manifest.json":
+            return _manifest_for_heartbeat_test()
+        raise KeyError(artifact_name)
+
+
 @pytest.fixture
 def gate_policy() -> Any:
     return load_gate_policy(LITE_POLICY_PATH)
@@ -46,6 +85,71 @@ def test_dbt_adapter_signatures_match_issue_contract() -> None:
         "event",
         "policy",
     ]
+
+
+def test_handle_dbt_test_failure_dispatches_alert_and_writes_request(
+    caplog: pytest.LogCaptureFixture,
+    gate_policy: Any,
+    tmp_path: Path,
+) -> None:
+    event = _heartbeat_failure_event()
+    context = FakeDagsterContext()
+
+    with caplog.at_level(logging.WARNING):
+        result = handle_dbt_test_failure(
+            context=context,
+            event=event,
+            policy=gate_policy,
+            request_dir=tmp_path,
+        )
+
+    payload = _alert_payloads(caplog)[-1]
+    request_payload = json.loads(result.rerun_request_path.read_text())
+
+    assert result.decision.action is GateAction.PARTIAL_RERUN
+    assert result.partial_rerun_plan is not None
+    assert result.partial_rerun_plan.rerun_selection == ("heartbeat",)
+    assert request_payload["run_id"] == "run-dbt"
+    assert request_payload["failed_node"] == "heartbeat"
+    assert request_payload["rerun_selection"] == ["heartbeat"]
+    assert request_payload["requires_manual_ack"] is False
+    assert request_payload["rerun_mode"] == "asset_only"
+    assert payload["cycle_id"] == "cycle-dbt"
+    assert payload["phase"] == "phase0"
+    assert payload["failed_node"] == "heartbeat"
+    assert payload["action"] == "partial_rerun"
+    assert payload["failure_class"] == "task_level"
+
+
+def test_stream_dbt_build_events_handles_failed_test_artifact(
+    caplog: pytest.LogCaptureFixture,
+    gate_policy: Any,
+    tmp_path: Path,
+) -> None:
+    stream = stream_dbt_build_events(
+        context=FakeDagsterContext(),
+        dbt_invocation=FailingDbtInvocation(),
+        policy=gate_policy,
+        request_dir=tmp_path,
+    )
+
+    assert next(stream) == {"event": "dbt build started"}
+    with caplog.at_level(logging.WARNING), pytest.raises(
+        RuntimeError,
+        match="dbt build failed",
+    ):
+        next(stream)
+
+    payload = _alert_payloads(caplog)[-1]
+    request_files = list(tmp_path.glob("*.json"))
+    request_payload = json.loads(request_files[0].read_text())
+
+    assert payload["cycle_id"] == "cycle-dbt"
+    assert payload["failed_node"] == "heartbeat"
+    assert payload["action"] == "partial_rerun"
+    assert payload["failure_class"] == "task_level"
+    assert request_payload["failed_node"] == "heartbeat"
+    assert request_payload["rerun_selection"] == ["heartbeat"]
 
 
 def test_classify_dbt_test_failure_from_node_name(gate_policy: Any) -> None:
@@ -188,3 +292,46 @@ def _with_phase0_task_partial_allowed(
             ],
         },
     )
+
+
+def _heartbeat_failure_event() -> dict[str, object]:
+    return {
+        "asset_key": "heartbeat",
+        "metadata": {
+            "node_info": {
+                "node_name": "not_null_heartbeat_heartbeat",
+                "unique_id": "test.orchestrator_stub.not_null_heartbeat_heartbeat",
+            },
+            "dbt_message": "Got 1 result, configured to fail if != 0",
+        },
+    }
+
+
+def _manifest_for_heartbeat_test() -> dict[str, object]:
+    test_unique_id = "test.orchestrator_stub.not_null_heartbeat_heartbeat"
+    model_unique_id = "model.orchestrator_stub.heartbeat"
+
+    return {
+        "nodes": {
+            test_unique_id: {
+                "resource_type": "test",
+                "name": "not_null_heartbeat_heartbeat",
+                "unique_id": test_unique_id,
+                "depends_on": {"nodes": [model_unique_id]},
+            },
+            model_unique_id: {
+                "resource_type": "model",
+                "name": "heartbeat",
+                "unique_id": model_unique_id,
+            },
+        },
+    }
+
+
+def _alert_payloads(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+    payloads: list[dict[str, object]] = []
+    for record in caplog.records:
+        if record.name != "orchestrator.alerting.dispatcher":
+            continue
+        payloads.append(json.loads(record.message))
+    return payloads
