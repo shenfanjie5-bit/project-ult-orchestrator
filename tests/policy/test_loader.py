@@ -1,4 +1,5 @@
 import logging
+from inspect import signature
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,10 @@ def _write_policy(tmp_path: Path, policy_data: dict[str, Any]) -> Path:
     policy_path = tmp_path / "gate_policy.yaml"
     policy_path.write_text(yaml.safe_dump(policy_data), encoding="utf-8")
     return policy_path
+
+
+def test_load_gate_policy_signature_matches_contract() -> None:
+    assert list(signature(load_gate_policy).parameters) == ["policy_path"]
 
 
 def test_load_gate_policy_lite_success() -> None:

@@ -12,11 +12,11 @@ from orchestrator.policy.schema import GatePolicyProfile
 logger = logging.getLogger(__name__)
 
 
-def load_gate_policy(path: Path | str) -> GatePolicyProfile:
+def load_gate_policy(policy_path: Path | str) -> GatePolicyProfile:
     """Load and validate a gate policy profile from YAML."""
 
-    policy_path = Path(path)
-    raw_policy = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    policy_file = Path(policy_path)
+    raw_policy = yaml.safe_load(policy_file.read_text(encoding="utf-8"))
     profile = GatePolicyProfile.model_validate(raw_policy)
 
     if profile.contract_version != CONTRACTS_VERSION:

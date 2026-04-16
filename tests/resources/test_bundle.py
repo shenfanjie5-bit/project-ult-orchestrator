@@ -1,5 +1,6 @@
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import datetime, timezone
+from inspect import signature
 from typing import Any
 
 import pytest
@@ -47,17 +48,30 @@ def test_stub_provider_injects_bootstrap_resource(
     resource_exports: dict[str, Any],
 ) -> None:
     AssetFactoryProvider = resource_exports["AssetFactoryProvider"]
+    ResourceBundle = resource_exports["ResourceBundle"]
     StubProvider = resource_exports["StubProvider"]
     build_resource_bundle = resource_exports["build_resource_bundle"]
     provider = StubProvider()
 
-    resources = build_resource_bundle("lite", [provider])
+    bundle = build_resource_bundle({"config_ref": "lite"}, [provider])
 
     assert isinstance(provider, AssetFactoryProvider)
-    assert tuple(resources) == ("orchestration_context_stub",)
-    assert resources["orchestration_context_stub"].create_resource(None) == {
-        "mode": "stub"
-    }
+    assert isinstance(bundle, ResourceBundle)
+    assert bundle.resource_keys == ("orchestration_context_stub",)
+    assert bundle.source_modules == ("orchestrator.resources._stub_provider",)
+    assert bundle.config_ref == "lite"
+    assert bundle.read_only is True
+
+
+def test_build_resource_bundle_signature_matches_contract(
+    resource_exports: dict[str, Any],
+) -> None:
+    build_resource_bundle = resource_exports["build_resource_bundle"]
+
+    assert list(signature(build_resource_bundle).parameters) == [
+        "env_config",
+        "module_factories",
+    ]
 
 
 def test_duplicate_resource_key_raises_value_error(
@@ -70,7 +84,10 @@ def test_duplicate_resource_key_raises_value_error(
         ValueError,
         match="duplicate resource key: orchestration_context_stub",
     ):
-        build_resource_bundle("lite", [StubProvider(), StubProvider()])
+        build_resource_bundle(
+            {"config_ref": "lite"},
+            [StubProvider(), StubProvider()],
+        )
 
 
 def test_read_only_resource_bundle_rejects_field_mutation(
