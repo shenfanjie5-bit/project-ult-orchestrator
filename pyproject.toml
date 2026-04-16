@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
     "dagster",
     "dagster-dbt",
+    "pendulum>=3.2",
     "pydantic",
     "pyyaml",
 ]
