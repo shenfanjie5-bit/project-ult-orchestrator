@@ -12,6 +12,11 @@ from orchestrator.checks.models import (
     LLMHealthProbe,
     LLMHealthResult,
 )
+from orchestrator.checks.phase1 import (
+    GraphPromotionFailureEvent,
+    classify_graph_promotion_failure,
+    should_advance_ready_graph,
+)
 from orchestrator.policy import FailureClass, GateAction, PhaseEnum
 
 
@@ -37,14 +42,17 @@ __all__ = [
     "DataReadinessSignal",
     "GateDecision",
     "GatePolicyResource",
+    "GraphPromotionFailureEvent",
     "LLMHealthProbe",
     "LLMHealthResult",
     "PhaseEnum",
     "UnknownGateFailure",
     "classify_gate_result",
     "classify_dbt_test_failure",
+    "classify_graph_promotion_failure",
     "dispatch_gate_decision_alert",
     "llm_health_check",
     "phase0_ping_check",
     "plan_dbt_test_partial_rerun",
+    "should_advance_ready_graph",
 ]
