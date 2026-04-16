@@ -43,6 +43,7 @@ def test_collect_run_diagnostic_serializes_gate_metadata_and_rerun_request(
             "phase": "phase0",
             "action": "partial_rerun",
             "failure_class": "task_level",
+            "scenario_id": "phase0_dbt_test_failed",
             "failed_node": "heartbeat",
             "reason": _MetadataText("dbt test failed"),
         },
@@ -52,6 +53,7 @@ def test_collect_run_diagnostic_serializes_gate_metadata_and_rerun_request(
         metadata={
             "action": "fail_run",
             "failure_class": "infra",
+            "scenario_id": "phase0_llm_health_check_failed",
             "summary": "provider unavailable",
         },
     )
@@ -71,6 +73,7 @@ def test_collect_run_diagnostic_serializes_gate_metadata_and_rerun_request(
         rerun_selection=["heartbeat"],
         rerun_mode="asset_only",
         requires_manual_ack=False,
+        scenario_id="phase0_dbt_test_failed",
     )
     _write_request(
         tmp_path / "other-run.json",
@@ -110,6 +113,7 @@ def test_collect_run_diagnostic_serializes_gate_metadata_and_rerun_request(
             "phase": "phase0",
             "failure_class": "task_level",
             "action": "partial_rerun",
+            "scenario_id": "phase0_dbt_test_failed",
             "failed_node": "heartbeat",
             "summary": "dbt test failed",
             "runbook_url": "docs/RUNBOOK_P5.md#phase0-task_level-partial_rerun",
@@ -119,6 +123,7 @@ def test_collect_run_diagnostic_serializes_gate_metadata_and_rerun_request(
             "phase": "phase0",
             "failure_class": "infra",
             "action": "fail_run",
+            "scenario_id": "phase0_llm_health_check_failed",
             "failed_node": "llm_health_check",
             "summary": "provider unavailable",
             "runbook_url": "docs/RUNBOOK_P5.md#phase0-infra-fail_run",
@@ -132,6 +137,7 @@ def test_collect_run_diagnostic_serializes_gate_metadata_and_rerun_request(
             "requires_manual_ack": False,
             "rerun_mode": "asset_only",
             "generated_at": "2026-04-16T00:00:00+00:00",
+            "scenario_id": "phase0_dbt_test_failed",
         },
     ]
 
@@ -165,6 +171,7 @@ def test_collect_run_diagnostic_keeps_repair_request_manual_ack(
             "requires_manual_ack": True,
             "rerun_mode": "repair_only",
             "generated_at": "2026-04-16T00:00:00+00:00",
+            "scenario_id": None,
         },
     ]
     assert "formal_objects_commit" not in payload["rerun_plans"][0]["rerun_selection"]
@@ -299,17 +306,16 @@ def _write_request(
     rerun_selection: list[str],
     rerun_mode: str,
     requires_manual_ack: bool,
+    scenario_id: str | None = None,
 ) -> None:
-    path.write_text(
-        json.dumps(
-            {
-                "run_id": run_id,
-                "failed_node": failed_node,
-                "rerun_selection": rerun_selection,
-                "requires_manual_ack": requires_manual_ack,
-                "rerun_mode": rerun_mode,
-                "generated_at": "2026-04-16T00:00:00+00:00",
-            },
-        ),
-        encoding="utf-8",
-    )
+    payload = {
+        "run_id": run_id,
+        "failed_node": failed_node,
+        "rerun_selection": rerun_selection,
+        "requires_manual_ack": requires_manual_ack,
+        "rerun_mode": rerun_mode,
+        "generated_at": "2026-04-16T00:00:00+00:00",
+    }
+    if scenario_id is not None:
+        payload["scenario_id"] = scenario_id
+    path.write_text(json.dumps(payload), encoding="utf-8")

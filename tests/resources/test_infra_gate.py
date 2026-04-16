@@ -66,6 +66,7 @@ def test_classify_infrastructure_failure_hard_stops_each_phase(
     assert decision.phase is phase
     assert decision.action is GateAction.FAIL_RUN
     assert decision.failure_class.value == "infra"
+    assert decision.scenario_id == infra.INFRA_UNAVAILABLE_HARD_STOP_SCENARIO_ID
     assert decision.reason == (
         "Core storage or graph infrastructure is unavailable; hard stop."
     )

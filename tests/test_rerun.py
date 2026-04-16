@@ -71,6 +71,7 @@ def test_partial_rerun_plan_fields_match_runtime_model() -> None:
         "requires_manual_ack",
         "generated_at",
         "rerun_mode",
+        "scenario_id",
     ]
 
 
@@ -98,6 +99,7 @@ def test_plan_partial_rerun_facade_remains_importable_and_frozen() -> None:
     assert plan.rerun_selection == ("phase0_readiness_ping",)
     assert plan.requires_manual_ack is False
     assert plan.rerun_mode == "asset_only"
+    assert plan.scenario_id is None
     assert plan.generated_at.tzinfo is not None
     with pytest.raises(FrozenInstanceError):
         plan.failed_node = "other"
@@ -132,6 +134,7 @@ def test_asset_only_returns_failed_node_without_manual_ack() -> None:
     assert plan.rerun_selection == ("phase2_score_AAPL",)
     assert plan.requires_manual_ack is False
     assert plan.rerun_mode == "asset_only"
+    assert plan.scenario_id == "test_phase2_task_level_partial_rerun_asset_only"
 
 
 def test_phase_only_returns_same_phase_downstream_closure() -> None:

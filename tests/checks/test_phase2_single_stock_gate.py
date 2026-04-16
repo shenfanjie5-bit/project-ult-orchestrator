@@ -73,6 +73,7 @@ def test_classify_phase2_single_stock_failure_marks_inconclusive(
     assert decision.phase is PhaseEnum.PHASE2
     assert decision.failure_class is FailureClass.TASK_LEVEL
     assert decision.action is GateAction.MARK_INCONCLUSIVE
+    assert decision.scenario_id == "phase2_single_stock_task_failed"
     assert (
         decision.reason
         == "A single-stock LLM task failed within tolerance; continue the pool."
@@ -172,6 +173,7 @@ def test_inconclusive_metadata_contains_asset_check_fields(gate_policy: Any) -> 
         "phase": "phase2",
         "failure_class": "task_level",
         "action": "mark_inconclusive",
+        "scenario_id": "phase2_single_stock_task_failed",
         "stock_id": "AAPL",
         "failed_node": "phase2_llm_score_AAPL",
         "failure_rate": 0.1,

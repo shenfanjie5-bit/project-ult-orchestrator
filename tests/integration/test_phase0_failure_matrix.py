@@ -83,11 +83,13 @@ def test_readiness_not_ready_fails_phase0_alerts_and_skips(
     assert decision.phase is PhaseEnum.PHASE0
     assert decision.failure_class is FailureClass.DATA_QUALITY
     assert decision.action is GateAction.FAIL_RUN
+    assert decision.scenario_id == "phase0_data_readiness_delayed"
     assert alert["cycle_id"] == "cycle-20260416"
     assert alert["phase"] == "phase0"
     assert alert["failed_node"] == "phase0_readiness_ping"
     assert alert["action"] == "fail_run"
     assert alert["failure_class"] == "data_quality"
+    assert alert["scenario_id"] == "phase0_data_readiness_delayed"
 
 
 def test_llm_health_failure_emits_failed_check_and_blocks_downstream_phase(
@@ -136,6 +138,10 @@ def test_llm_health_failure_emits_failed_check_and_blocks_downstream_phase(
     assert getattr(llm_evaluation, "passed", None) is False
     assert metadata_value(llm_evaluation, "action") == "fail_run"
     assert metadata_value(llm_evaluation, "failure_class") == "infra"
+    assert (
+        metadata_value(llm_evaluation, "scenario_id")
+        == "phase0_llm_health_check_failed"
+    )
     assert dagster.AssetKey(["phase1_trigger_marker"]) not in asset_materialization_keys(
         result,
     )
@@ -173,6 +179,7 @@ def test_dbt_test_failure_matrix_plans_only_failed_dbt_asset_group(
     assert plan.rerun_selection == (failed_asset_key.to_user_string(),)
     assert plan.requires_manual_ack is False
     assert plan.rerun_mode == "asset_only"
+    assert plan.scenario_id == "phase0_dbt_test_failed"
     assert "dbt_phase0_assets" not in plan.rerun_selection
     assert "phase0_readiness_ping" not in plan.rerun_selection
     assert "candidate_freeze" not in plan.rerun_selection
@@ -245,14 +252,17 @@ def test_dbt_test_failure_dagster_run_emits_gate_alert_observation_and_request(
     assert result.success is False
     assert metadata_value(gate_observation, "action") == "partial_rerun"
     assert metadata_value(gate_observation, "failure_class") == "task_level"
+    assert metadata_value(gate_observation, "scenario_id") == "phase0_dbt_test_failed"
     assert metadata_value(gate_observation, "failed_node") == failed_node
     assert request["run_id"] == result.run_id
     assert request["failed_node"] == failed_node
     assert request["rerun_selection"] == [failed_node]
     assert request["rerun_mode"] == "asset_only"
+    assert request["scenario_id"] == "phase0_dbt_test_failed"
     assert alert["failed_node"] == failed_node
     assert alert["action"] == "partial_rerun"
     assert alert["failure_class"] == "task_level"
+    assert alert["scenario_id"] == "phase0_dbt_test_failed"
 
 
 def test_manual_rerun_request_sensor_minimal_happy_path(

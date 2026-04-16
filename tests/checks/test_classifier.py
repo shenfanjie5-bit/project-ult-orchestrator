@@ -43,6 +43,7 @@ def test_gate_decision_fields_match_runtime_model() -> None:
         "failure_class",
         "action",
         "reason",
+        "scenario_id",
     ]
 
 
@@ -74,6 +75,7 @@ def test_classify_phase0_infra_fails_run(gate_policy: Any) -> None:
     assert decision.phase is PhaseEnum.PHASE0
     assert decision.failure_class is FailureClass.INFRA
     assert decision.action is GateAction.FAIL_RUN
+    assert decision.scenario_id == "phase0_llm_health_check_failed"
     assert decision.reason == "LLM health check failed; stop before Phase 1."
 
 
@@ -87,6 +89,7 @@ def test_classify_phase2_task_level_marks_inconclusive(gate_policy: Any) -> None
     assert decision.phase is PhaseEnum.PHASE2
     assert decision.failure_class is FailureClass.TASK_LEVEL
     assert decision.action is GateAction.MARK_INCONCLUSIVE
+    assert decision.scenario_id == "phase2_single_stock_task_failed"
     assert (
         decision.reason
         == "A single-stock LLM task failed within tolerance; continue the pool."
@@ -101,6 +104,7 @@ def test_classify_phase3_infra_repairs_manifest(gate_policy: Any) -> None:
     )
 
     assert decision.action is GateAction.REPAIR_MANIFEST
+    assert decision.scenario_id == "phase3_manifest_write_failed"
 
 
 def test_classify_scenario_uses_applies_to_phase(gate_policy: Any) -> None:
@@ -115,6 +119,7 @@ def test_classify_scenario_uses_applies_to_phase(gate_policy: Any) -> None:
 
     assert decision.phase is PhaseEnum.PHASE1
     assert decision.action is GateAction.FAIL_RUN
+    assert decision.scenario_id == "infra_unavailable_hard_stop"
 
 
 def test_unknown_policy_combination_raises(gate_policy: Any) -> None:

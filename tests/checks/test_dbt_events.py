@@ -109,6 +109,7 @@ def test_classify_dbt_test_failure_from_node_name(gate_policy: Any) -> None:
     assert decision.phase is PhaseEnum.PHASE0
     assert decision.failure_class is FailureClass.TASK_LEVEL
     assert decision.action is GateAction.PARTIAL_RERUN
+    assert decision.scenario_id == "phase0_dbt_test_failed"
     assert (
         decision.reason
         == "dbt test failed; rerun the repaired asset group after the fix."
@@ -139,6 +140,7 @@ def test_plan_dbt_test_partial_rerun_uses_validated_event_asset_key(
     assert plan.rerun_selection == ("dbt_phase0_assets",)
     assert plan.requires_manual_ack is False
     assert plan.rerun_mode == "asset_only"
+    assert plan.scenario_id == "phase0_dbt_test_failed"
     assert "phase0_readiness_ping" not in plan.rerun_selection
     assert "candidate_freeze" not in plan.rerun_selection
 
@@ -246,15 +248,21 @@ def test_stream_dbt_events_handles_failed_check_with_alert_and_request(
     assert _observation_asset_key(observation) == "heartbeat"
     assert _observation_metadata_value(observation, "action") == "partial_rerun"
     assert _observation_metadata_value(observation, "failure_class") == "task_level"
+    assert (
+        _observation_metadata_value(observation, "scenario_id")
+        == "phase0_dbt_test_failed"
+    )
     assert _observation_metadata_value(observation, "failed_node") == "heartbeat"
     assert request["run_id"] == "run-dbt"
     assert request["failed_node"] == "heartbeat"
     assert request["rerun_selection"] == ["heartbeat"]
     assert request["rerun_mode"] == "asset_only"
+    assert request["scenario_id"] == "phase0_dbt_test_failed"
     assert alert["cycle_id"] == "cycle-dbt"
     assert alert["failed_node"] == "heartbeat"
     assert alert["action"] == "partial_rerun"
     assert alert["failure_class"] == "task_level"
+    assert alert["scenario_id"] == "phase0_dbt_test_failed"
     assert alert["runbook_url"] == (
         "docs/RUNBOOK_P5.md#phase0-task_level-partial_rerun"
     )

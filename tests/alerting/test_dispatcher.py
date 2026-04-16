@@ -48,6 +48,7 @@ def payload() -> AlertPayload:
         action="fail_run",
         summary="test",
         failure_class="infra",
+        scenario_id="phase0_llm_health_check_failed",
         runbook_url="https://runbooks.example/c1",
     )
 
@@ -131,6 +132,7 @@ def test_dispatch_alert_slack_channel_posts_minimal_payload(
     assert body["phase"] == payload.phase
     assert body["action"] == payload.action
     assert body["failure_class"] == payload.failure_class
+    assert body["scenario_id"] == payload.scenario_id
     assert body["summary"] == payload.summary
     assert body["runbook_url"] == payload.runbook_url
 
@@ -246,6 +248,7 @@ def test_alert_payload_optional_fields_allow_none() -> None:
 
     assert payload.failed_node is None
     assert payload.failure_class is None
+    assert payload.scenario_id is None
     assert payload.runbook_url is None
 
 
@@ -260,6 +263,7 @@ def test_alert_payload_field_set_matches_runbook_payload() -> None:
         "action",
         "summary",
         "failure_class",
+        "scenario_id",
         "runbook_url",
     }
 

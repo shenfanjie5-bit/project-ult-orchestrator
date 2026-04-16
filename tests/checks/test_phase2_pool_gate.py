@@ -64,6 +64,7 @@ def test_classify_phase2_pool_failure_rate_threshold(
     assert decision.failure_class is FailureClass.DATA_QUALITY
     assert decision.action is expected_action
     if expected_action is GateAction.FAIL_RUN:
+        assert decision.scenario_id == "phase2_pool_failure_rate_exceeded"
         assert (
             decision.reason
             == "Pool failure rate exceeded threshold; fail the run and alert."
@@ -161,6 +162,7 @@ def test_dispatch_phase2_pool_failure_alert_logs_shared_payload(
     assert payload["phase"] == "phase2"
     assert payload["failure_class"] == "data_quality"
     assert payload["action"] == "fail_run"
+    assert payload["scenario_id"] == "phase2_pool_failure_rate_exceeded"
     assert payload["failed_node"] == "phase2_stock_AAPL, phase2_stock_MSFT"
     assert payload["summary"] == (
         "Phase 2 pool failure rate 0.4 (4/10): fake pool failures"

@@ -94,6 +94,7 @@ def test_llm_health_check_fails_phase0_infra_with_fail_run_action(
     assert result.passed is False
     assert result.metadata["failure_class"] == "infra"
     assert result.metadata["action"] == "fail_run"
+    assert result.metadata["scenario_id"] == "phase0_llm_health_check_failed"
     assert result.metadata["provider"] == "fake-llm"
     assert result.metadata["summary"] == "probe failed"
 
@@ -124,6 +125,7 @@ def test_llm_health_check_dispatches_fail_run_alert(
     assert payload["failed_node"] == "llm_health_check"
     assert payload["action"] == "fail_run"
     assert payload["failure_class"] == "infra"
+    assert payload["scenario_id"] == "phase0_llm_health_check_failed"
     assert payload["summary"] == "LLM health check failed; stop before Phase 1."
 
 
@@ -148,8 +150,10 @@ def test_llm_health_check_probe_exception_is_policy_classified(
     assert result.metadata["summary"] == "llm health probe failed: probe timeout"
     assert result.metadata["failure_class"] == "infra"
     assert result.metadata["action"] == "fail_run"
+    assert result.metadata["scenario_id"] == "phase0_llm_health_check_failed"
     assert payload["failure_class"] == "infra"
     assert payload["action"] == "fail_run"
+    assert payload["scenario_id"] == "phase0_llm_health_check_failed"
 
 
 def test_llm_health_check_is_dagster_asset_check_definition() -> None:

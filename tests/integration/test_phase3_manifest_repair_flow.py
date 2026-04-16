@@ -137,12 +137,14 @@ def test_daily_cycle_manifest_failure_hook_writes_repair_only_request(
     assert request["rerun_selection"] == [repair_node]
     assert request["rerun_mode"] == "repair_only"
     assert request["requires_manual_ack"] is True
+    assert request["scenario_id"] == "phase3_manifest_write_failed"
 
     assert alert["cycle_id"] == cycle_id
     assert alert["phase"] == "phase3"
     assert alert["failed_node"] == PHASE3_MANIFEST_ASSET_KEY
     assert alert["action"] == "repair_manifest"
     assert alert["failure_class"] == "infra"
+    assert alert["scenario_id"] == "phase3_manifest_write_failed"
     assert str(request_files[0]) in str(alert["summary"])
     assert "fake manifest write failed" in str(alert["summary"])
 
@@ -154,6 +156,7 @@ def test_daily_cycle_manifest_failure_hook_writes_repair_only_request(
         "rerun_of": result.run_id,
         "failed_node": PHASE3_MANIFEST_ASSET_KEY,
         "rerun_mode": "repair_only",
+        "scenario_id": "phase3_manifest_write_failed",
     }
     assert _asset_selection_strings(run_request.asset_selection) == [repair_node]
 
