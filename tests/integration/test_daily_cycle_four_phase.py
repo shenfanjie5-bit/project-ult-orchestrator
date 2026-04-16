@@ -43,11 +43,12 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
         PHASE3_FORMAL_COMMIT_ASSET_KEY,
         PHASE3_MANIFEST_ASSET_KEY,
     )
-    from orchestrator.schedules import daily_cycle_schedule
+
+    heartbeat_key = _heartbeat_asset_key(dbt_phase0_assets)
 
     defs = build_definitions(
         module_factories=[
-            fake_data_platform_reasoner_provider(dagster),
+            fake_data_platform_reasoner_provider(dagster, heartbeat_key),
             fake_graph_engine_provider(dagster),
             fake_main_core_provider(dagster),
             fake_audit_eval_provider(dagster),
@@ -56,8 +57,10 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
     )
     dagster.Definitions.validate_loadable(defs)
 
+    daily_cycle_schedule = _schedule_by_name(defs, "daily_cycle_schedule")
     assert daily_cycle_schedule.cron_schedule == "0 17 * * 1-5"
     assert daily_cycle_schedule.execution_timezone == "Asia/Shanghai"
+    assert _schedule_job_name(daily_cycle_schedule) == "daily_cycle_job"
 
     schedule_tick = _evaluate_daily_cycle_schedule(
         dagster,
@@ -67,23 +70,28 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
     run_requests = list(getattr(schedule_tick, "run_requests", ()) or ())
 
     assert len(run_requests) == 1
-    assert _run_request_job_name(run_requests[0]) in {None, "daily_cycle_job"}
+    selected_job_name = (
+        _run_request_job_name(run_requests[0])
+        or _schedule_job_name(daily_cycle_schedule)
+    )
+    assert selected_job_name == "daily_cycle_job"
 
-    result = defs.get_job_def("daily_cycle_job").execute_in_process(
+    result = defs.get_job_def(selected_job_name).execute_in_process(
         instance=dagster_instance,
         run_config=getattr(run_requests[0], "run_config", {}) or {},
         tags=getattr(run_requests[0], "tags", {}) or {},
     )
 
-    heartbeat_key = _heartbeat_asset_key(dbt_phase0_assets)
+    candidate_freeze_key = dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY])
+    graph_promotion_key = dagster.AssetKey([PHASE1_GRAPH_PROMOTION_ASSET_KEY])
     formal_commit_key = dagster.AssetKey([PHASE3_FORMAL_COMMIT_ASSET_KEY])
     manifest_key = dagster.AssetKey([PHASE3_MANIFEST_ASSET_KEY])
     audit_hook_key = dagster.AssetKey([RETROSPECTIVE_HOOK_ASSET_KEY])
     expected_materialized_keys = {
         dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
         heartbeat_key,
-        dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
-        dagster.AssetKey([PHASE1_GRAPH_PROMOTION_ASSET_KEY]),
+        candidate_freeze_key,
+        graph_promotion_key,
         dagster.AssetKey([PHASE1_GRAPH_SNAPSHOT_ASSET_KEY]),
         *(dagster.AssetKey([stage]) for stage in PHASE2_STAGE_KEYS),
         formal_commit_key,
@@ -97,6 +105,12 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
 
     assert result.success is True
     assert materialized_keys == expected_materialized_keys
+    assert materialized_order.index(heartbeat_key) < materialized_order.index(
+        candidate_freeze_key,
+    )
+    assert materialized_order.index(candidate_freeze_key) < materialized_order.index(
+        graph_promotion_key,
+    )
     assert materialized_order.index(formal_commit_key) < materialized_order.index(
         manifest_key,
     )
@@ -112,7 +126,10 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
     } <= evaluation_names
 
 
-def fake_data_platform_reasoner_provider(dagster: Any) -> AssetFactoryProvider:
+def fake_data_platform_reasoner_provider(
+    dagster: Any,
+    heartbeat_key: object,
+) -> AssetFactoryProvider:
     from orchestrator.checks import DataReadinessSignal
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
@@ -144,6 +161,7 @@ def fake_data_platform_reasoner_provider(dagster: Any) -> AssetFactoryProvider:
     @dagster.asset(
         name=PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
         group_name=PHASE0_GROUP_NAME,
+        deps=[heartbeat_key],
     )
     def candidate_freeze() -> str:
         return "frozen"
@@ -401,6 +419,33 @@ def _build_schedule_context(
             last_error = exc
 
     pytest.fail(f"could not build Dagster schedule context: {last_error}")
+
+
+def _schedule_by_name(defs: object, schedule_name: str) -> object:
+    get_schedule_def = getattr(defs, "get_schedule_def", None)
+    if callable(get_schedule_def):
+        return get_schedule_def(schedule_name)
+
+    for schedule in getattr(defs, "schedules", ()) or ():
+        if getattr(schedule, "name", None) == schedule_name:
+            return schedule
+
+    pytest.fail(f"assembled Definitions did not include schedule: {schedule_name}")
+
+
+def _schedule_job_name(schedule: object) -> str | None:
+    job_name = getattr(schedule, "job_name", None)
+    if isinstance(job_name, str):
+        return job_name
+
+    target = getattr(schedule, "target", None)
+    target_job_name = getattr(target, "job_name", None)
+    if isinstance(target_job_name, str):
+        return target_job_name
+
+    job = getattr(schedule, "job", None)
+    name = getattr(job, "name", None)
+    return name if isinstance(name, str) else None
 
 
 def _heartbeat_asset_key(dbt_phase0_assets: object) -> object:
