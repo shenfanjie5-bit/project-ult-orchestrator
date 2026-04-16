@@ -26,6 +26,7 @@ dev = [
 ]
 
 [project.scripts]
+orchestrator = "orchestrator.cli.main:main"
 orchestrator-rerun = "orchestrator.cli.rerun:main"
 
 [tool.setuptools.packages.find]
