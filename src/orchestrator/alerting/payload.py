@@ -10,4 +10,5 @@ class AlertPayload:
     action: str
     summary: str
     failure_class: str | None = None
+    scenario_id: str | None = None
     runbook_url: str | None = None

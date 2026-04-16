@@ -110,6 +110,7 @@ def inconclusive_metadata(
             decision.failure_class.value if decision.failure_class is not None else ""
         ),
         "action": decision.action.value,
+        "scenario_id": decision.scenario_id or "",
         "stock_id": event.stock_id,
         "failed_node": event.failed_node,
         "failure_rate": phase2_failure_rate(event.failed_count, event.total_count),
@@ -253,6 +254,7 @@ def _phase2_pool_failure_metadata(
             decision.failure_class.value if decision.failure_class is not None else ""
         ),
         "action": decision.action.value,
+        "scenario_id": decision.scenario_id or "",
         "failed_count": event.failed_count,
         "total_count": event.total_count,
         "failure_rate": phase2_failure_rate(event.failed_count, event.total_count),

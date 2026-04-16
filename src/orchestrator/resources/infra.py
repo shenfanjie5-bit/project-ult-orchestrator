@@ -464,6 +464,7 @@ def _fallback_infrastructure_decision(phase: PhaseEnum) -> GateDecision:
         failure_class=FailureClass.INFRA,
         action=GateAction.FAIL_RUN,
         reason=_INFRA_HARD_STOP_REASON,
+        scenario_id=INFRA_UNAVAILABLE_HARD_STOP_SCENARIO_ID,
     )
 
 

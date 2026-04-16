@@ -33,8 +33,10 @@ def dispatch_gate_decision_alert(
             action=decision.action.value,
             summary=summary,
             failure_class=failure_class,
+            scenario_id=decision.scenario_id,
             runbook_url=runbook_url,
         ),
+        scenario_id=decision.scenario_id,
     )
 
     dispatch_alert(

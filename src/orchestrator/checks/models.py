@@ -16,6 +16,7 @@ class GateDecision:
     failure_class: FailureClass | None
     action: GateAction
     reason: str | None = None
+    scenario_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

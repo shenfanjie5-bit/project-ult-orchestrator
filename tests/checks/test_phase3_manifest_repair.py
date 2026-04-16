@@ -54,6 +54,7 @@ def test_classify_manifest_write_failure_repairs_manifest(
     assert decision.phase is PhaseEnum.PHASE3
     assert decision.failure_class is FailureClass.INFRA
     assert decision.action is GateAction.REPAIR_MANIFEST
+    assert decision.scenario_id == "phase3_manifest_write_failed"
     assert (
         decision.reason
         == "Manifest write failed; alert and expose repair-only rerun."
@@ -75,6 +76,7 @@ def test_plan_manifest_repair_rerun_selects_only_repair_asset(
     assert plan.rerun_selection == (REPAIR_MANIFEST_ASSET_KEY,)
     assert plan.rerun_mode == "repair_only"
     assert plan.requires_manual_ack is True
+    assert plan.scenario_id == "phase3_manifest_write_failed"
     assert PHASE3_FORMAL_COMMIT_ASSET_KEY not in plan.rerun_selection
     assert PHASE3_MANIFEST_ASSET_KEY not in plan.rerun_selection
     assert request["rerun_selection"] == [REPAIR_MANIFEST_ASSET_KEY]
@@ -115,6 +117,7 @@ def test_manifest_write_failure_alert_payload_contains_repair_action(
     assert payload["phase"] == "phase3"
     assert payload["failure_class"] == "infra"
     assert payload["action"] == "repair_manifest"
+    assert payload["scenario_id"] == "phase3_manifest_write_failed"
     assert payload["failed_node"] == PHASE3_MANIFEST_ASSET_KEY
     assert payload["runbook_url"] == (
         "docs/RUNBOOK_P5.md#phase3-infra-repair_manifest"

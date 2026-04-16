@@ -179,6 +179,7 @@ def _llm_health_metadata(
             decision.failure_class.value if decision.failure_class else ""
         )
         metadata["action"] = decision.action.value
+        metadata["scenario_id"] = decision.scenario_id or ""
     return metadata
 
 

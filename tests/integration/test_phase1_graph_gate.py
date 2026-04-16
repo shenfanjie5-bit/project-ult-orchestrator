@@ -101,6 +101,7 @@ def test_phase1_snapshot_failure_alerts_and_does_not_advance_ready_graph(
     assert alert["failed_node"] == "graph_snapshot"
     assert alert["action"] == "fail_run"
     assert alert["failure_class"] == "publish"
+    assert alert["scenario_id"] == "phase1_graph_promotion_snapshot_failed"
     assert "snapshot writer failed after promoted" in str(alert["summary"])
 
 

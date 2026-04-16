@@ -59,6 +59,8 @@ def test_daily_cycle_hard_stops_on_guarded_resource_init_failure(
     assert payload["phase"] in {"phase0", "phase1", "phase2"}
     assert payload["failure_class"] == "infra"
     assert payload["action"] == "fail_run"
+    assert payload["scenario_id"] == "infra_unavailable_hard_stop"
+    assert payload["runbook_url"] == "docs/RUNBOOK_P5.md#phase2-infra-fail_run"
     assert payload["failed_node"] == failing_resource_key
     assert f"fake {failing_resource_key} unavailable" in str(payload["summary"])
 
@@ -96,6 +98,8 @@ def test_daily_cycle_alerts_when_gate_policy_resource_load_fails(
     assert payload["phase"] == "phase0"
     assert payload["failure_class"] == "infra"
     assert payload["action"] == "fail_run"
+    assert payload["scenario_id"] == "infra_unavailable_hard_stop"
+    assert payload["runbook_url"] == "docs/RUNBOOK_P5.md#phase2-infra-fail_run"
     assert payload["failed_node"] == "gate_policy"
     assert missing_policy_path.name in str(payload["summary"])
 

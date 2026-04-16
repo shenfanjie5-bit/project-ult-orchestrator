@@ -44,6 +44,7 @@ def classify_gate_result(
                 failure_class=failure_class,
                 action=entry.action,
                 reason=entry.description,
+                scenario_id=entry.scenario_id,
             )
 
     msg = (
@@ -88,6 +89,7 @@ def _classify_scenario(
         failure_class=failure_class,
         action=entry.action,
         reason=entry.description,
+        scenario_id=entry.scenario_id,
     )
 
 

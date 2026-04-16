@@ -140,14 +140,25 @@ def _validate_request(
             f"invalid manual rerun request {request_name}: generated_at is required",
         )
 
-    return {
+    validated = {
         "run_id": run_id,
         "failed_node": failed_node,
         "rerun_selection": list(rerun_selection),
         "requires_manual_ack": requires_manual_ack,
         "rerun_mode": rerun_mode,
         "generated_at": generated_at,
-    }, None
+    }
+    scenario_id = payload.get("scenario_id")
+    if scenario_id is not None:
+        if not _is_non_empty_str(scenario_id):
+            return (
+                None,
+                f"invalid manual rerun request {request_name}: "
+                "scenario_id must be a non-empty string when provided",
+            )
+        validated["scenario_id"] = scenario_id.strip()
+
+    return validated, None
 
 
 def _validate_repair_only_selection(
@@ -193,6 +204,9 @@ def _build_run_request(payload: dict[str, Any]) -> RunRequest:
         "failed_node": payload["failed_node"],
         "rerun_mode": payload["rerun_mode"],
     }
+    scenario_id = payload.get("scenario_id")
+    if isinstance(scenario_id, str) and scenario_id:
+        tags["scenario_id"] = scenario_id
     run_key = (
         "manual-rerun:"
         f"{payload['run_id']}:"

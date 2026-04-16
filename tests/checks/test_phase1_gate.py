@@ -48,6 +48,7 @@ def test_classify_graph_promotion_failure_uses_phase1_publish_policy(
     assert decision.phase is PhaseEnum.PHASE1
     assert decision.failure_class is FailureClass.PUBLISH
     assert decision.action is GateAction.FAIL_RUN
+    assert decision.scenario_id == "phase1_graph_promotion_snapshot_failed"
     assert (
         decision.reason
         == "Graph promotion or snapshot failed; retain the previous ready graph."

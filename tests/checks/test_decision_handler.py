@@ -36,6 +36,7 @@ def test_dispatch_gate_decision_alert_logs_fail_run_payload(
         "action": "fail_run",
         "summary": "not ready",
         "failure_class": "data_quality",
+        "scenario_id": None,
         "runbook_url": "docs/RUNBOOK_P5.md#phase0-data_quality-fail_run",
     }
 
@@ -100,6 +101,32 @@ def test_dispatch_gate_decision_alert_fills_runbook_for_non_continue_actions(
     assert payload["failure_class"] == failure_class.value
     assert payload["failed_node"] == "phase3_manifest"
     assert payload["runbook_url"] == expected_runbook_url
+
+
+def test_dispatch_gate_decision_alert_uses_scenario_runbook_mapping(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    decision = GateDecision(
+        phase=PhaseEnum.PHASE1,
+        failure_class=FailureClass.INFRA,
+        action=GateAction.FAIL_RUN,
+        reason="infra hard stop",
+        scenario_id="infra_unavailable_hard_stop",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        dispatch_gate_decision_alert(
+            decision,
+            cycle_id="cycle-1",
+            failed_node="graph_store",
+            summary="graph store unavailable",
+            channels=("logging",),
+        )
+
+    payload = json.loads(caplog.records[-1].message)
+
+    assert payload["scenario_id"] == "infra_unavailable_hard_stop"
+    assert payload["runbook_url"] == "docs/RUNBOOK_P5.md#phase2-infra-fail_run"
 
 
 def test_dispatch_gate_decision_alert_preserves_explicit_runbook_url(

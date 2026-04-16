@@ -299,6 +299,7 @@ def _gate_observation_metadata(
             else ""
         ),
         "reason": result.decision.reason or "",
+        "scenario_id": result.decision.scenario_id or "",
         "dbt_node_name": result.event.dbt_node_name or "",
         "failed_node": result.event.asset_key or "",
     }

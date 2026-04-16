@@ -97,6 +97,7 @@ def _dispatch_slack(payload: AlertPayload, webhook_url: str) -> None:
             "phase": payload.phase,
             "action": payload.action,
             "failure_class": payload.failure_class,
+            "scenario_id": payload.scenario_id,
             "summary": payload.summary,
             "runbook_url": payload.runbook_url,
         },

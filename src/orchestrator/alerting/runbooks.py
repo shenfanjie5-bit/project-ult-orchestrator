@@ -49,13 +49,17 @@ def with_runbook_url(
     if payload.runbook_url:
         return payload
 
+    resolved_scenario_id = scenario_id
+    if resolved_scenario_id is None:
+        resolved_scenario_id = payload.scenario_id
+
     return replace(
         payload,
         runbook_url=runbook_url_for(
             payload.phase,
             payload.failure_class,
             payload.action,
-            scenario_id=scenario_id,
+            scenario_id=resolved_scenario_id,
         ),
     )
 

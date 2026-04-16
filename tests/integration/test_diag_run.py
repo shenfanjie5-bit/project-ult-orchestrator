@@ -35,6 +35,7 @@ def test_diag_run_collects_event_log_and_manual_request_json(
             "phase": "phase2",
             "failure_class": "task_level",
             "action": "mark_inconclusive",
+            "scenario_id": "phase2_single_stock_task_failed",
             "failed_node": "phase2_llm_score_AAPL",
             "reason": "single-stock failure remains within tolerance",
         },
@@ -58,10 +59,11 @@ def test_diag_run_collects_event_log_and_manual_request_json(
                 "run_id": "run-1",
                 "failed_node": "dbt.phase0.heartbeat",
                 "rerun_selection": ["dbt.phase0.heartbeat"],
-                "requires_manual_ack": False,
-                "rerun_mode": "asset_only",
-                "generated_at": "2026-04-16T00:00:00+00:00",
-            },
+            "requires_manual_ack": False,
+            "rerun_mode": "asset_only",
+            "generated_at": "2026-04-16T00:00:00+00:00",
+            "scenario_id": "phase0_dbt_test_failed",
+        },
         ),
         encoding="utf-8",
     )
@@ -81,6 +83,7 @@ def test_diag_run_collects_event_log_and_manual_request_json(
             "phase": "phase2",
             "failure_class": "task_level",
             "action": "mark_inconclusive",
+            "scenario_id": "phase2_single_stock_task_failed",
             "failed_node": "phase2_llm_score_AAPL",
             "summary": "single-stock failure remains within tolerance",
             "runbook_url": "docs/RUNBOOK_P5.md#phase2-task_level-mark_inconclusive",
@@ -88,3 +91,4 @@ def test_diag_run_collects_event_log_and_manual_request_json(
     ]
     assert payload["rerun_plans"][0]["rerun_mode"] == "asset_only"
     assert payload["rerun_plans"][0]["rerun_selection"] == ["dbt.phase0.heartbeat"]
+    assert payload["rerun_plans"][0]["scenario_id"] == "phase0_dbt_test_failed"

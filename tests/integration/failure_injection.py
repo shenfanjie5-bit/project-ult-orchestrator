@@ -931,6 +931,7 @@ def _run_phase3_formal_commit_failure(
                 "phase": decision.phase.value,
                 "failure_class": decision.failure_class.value,
                 "action": decision.action.value,
+                "scenario_id": decision.scenario_id or "",
                 "failed_node": event.failed_node,
                 "table_name": event.table_name or "",
             },
