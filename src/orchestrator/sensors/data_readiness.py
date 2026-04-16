@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from dagster import RunRequest, SensorEvaluationContext, SkipReason, sensor
@@ -18,15 +17,20 @@ from orchestrator.policy import (
     FailureClass,
     GatePolicyProfile,
     PhaseEnum,
-    load_gate_policy,
 )
 from orchestrator.jobs.cycle import daily_cycle_job
 
 
-_DEFAULT_POLICY_PATH = (
-    Path(__file__).resolve().parents[3] / "config" / "policy" / "gate_policy.lite.yaml"
+DATA_READINESS_RESOURCE_KEY = "data_readiness"
+DATA_READINESS_PROVIDER_RESOURCE_KEY = "data_readiness_provider"
+GATE_POLICY_RESOURCE_KEY = "gate_policy"
+DATA_READINESS_SENSOR_REQUIRED_RESOURCE_KEYS = frozenset(
+    {DATA_READINESS_RESOURCE_KEY, GATE_POLICY_RESOURCE_KEY},
 )
-_READINESS_RESOURCE_KEYS = ("data_readiness", "data_readiness_provider")
+_READINESS_RESOURCE_KEYS = (
+    DATA_READINESS_RESOURCE_KEY,
+    DATA_READINESS_PROVIDER_RESOURCE_KEY,
+)
 _READINESS_METHOD_NAMES = (
     "get_data_readiness_signal",
     "get_readiness_signal",
@@ -43,7 +47,11 @@ class _DataReadinessGateEvent:
     reason: str | None = None
 
 
-@sensor(job=daily_cycle_job, name="data_readiness_sensor")
+@sensor(
+    job=daily_cycle_job,
+    name="data_readiness_sensor",
+    required_resource_keys=DATA_READINESS_SENSOR_REQUIRED_RESOURCE_KEYS,
+)
 def data_readiness_sensor(
     context: SensorEvaluationContext,
 ) -> RunRequest | SkipReason:
@@ -146,7 +154,7 @@ def _validate_signal(signal: DataReadinessSignal) -> None:
 
 
 def _gate_policy_from_context(context: SensorEvaluationContext) -> GatePolicyProfile:
-    resource = _first_available_resource(context, ("gate_policy",))
+    resource = _first_available_resource(context, (GATE_POLICY_RESOURCE_KEY,))
     if isinstance(resource, GatePolicyProfile):
         return resource
 
@@ -154,7 +162,13 @@ def _gate_policy_from_context(context: SensorEvaluationContext) -> GatePolicyPro
     if isinstance(policy, GatePolicyProfile):
         return policy
 
-    return load_gate_policy(_DEFAULT_POLICY_PATH)
+    if resource is None:
+        raise RuntimeError("gate_policy resource is required")
+
+    raise TypeError(
+        "gate_policy resource must be a GatePolicyProfile or expose "
+        "a GatePolicyProfile policy",
+    )
 
 
 def _first_available_resource(
@@ -179,4 +193,10 @@ def _first_available_resource(
     return None
 
 
-__all__ = ["data_readiness_sensor"]
+__all__ = [
+    "DATA_READINESS_PROVIDER_RESOURCE_KEY",
+    "DATA_READINESS_RESOURCE_KEY",
+    "DATA_READINESS_SENSOR_REQUIRED_RESOURCE_KEYS",
+    "GATE_POLICY_RESOURCE_KEY",
+    "data_readiness_sensor",
+]
