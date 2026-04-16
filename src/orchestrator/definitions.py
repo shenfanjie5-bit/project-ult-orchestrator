@@ -282,10 +282,9 @@ def _validate_phase0_provider_assets(provider_assets: Iterable[object]) -> None:
 
 
 def _validate_phase1_provider_assets(provider_assets: Iterable[object]) -> None:
-    required_asset_keys = (
-        AssetKey([PHASE1_GRAPH_PROMOTION_ASSET_KEY]),
-        AssetKey([PHASE1_GRAPH_SNAPSHOT_ASSET_KEY]),
-    )
+    graph_promotion_key = AssetKey([PHASE1_GRAPH_PROMOTION_ASSET_KEY])
+    graph_snapshot_key = AssetKey([PHASE1_GRAPH_SNAPSHOT_ASSET_KEY])
+    required_asset_keys = (graph_promotion_key, graph_snapshot_key)
     required_phase0_dependency_keys = frozenset(
         {
             AssetKey([PHASE0_READINESS_ASSET_KEY]),
@@ -295,10 +294,14 @@ def _validate_phase1_provider_assets(provider_assets: Iterable[object]) -> None:
     required_asset_key_names = {
         asset_key: asset_key.path[-1] for asset_key in required_asset_keys
     }
+    phase1_asset_defs: dict[AssetKey, object] = {}
 
     for asset_def in provider_assets:
         keys = tuple(getattr(asset_def, "keys", ()))
         group_names = getattr(asset_def, "group_names_by_key", {})
+        for asset_key in keys:
+            if group_names.get(asset_key) == PHASE1_GROUP_NAME:
+                phase1_asset_defs[asset_key] = asset_def
         for asset_key in required_asset_keys:
             if asset_key not in keys:
                 continue
@@ -309,29 +312,42 @@ def _validate_phase1_provider_assets(provider_assets: Iterable[object]) -> None:
                     f"{asset_key_name} asset must declare "
                     f"group_name={PHASE1_GROUP_NAME!r}; got {group_name!r}",
                 )
-            if asset_key == AssetKey([PHASE1_GRAPH_PROMOTION_ASSET_KEY]):
-                dependency_keys = _asset_dependency_keys(asset_def, asset_key)
-                missing_dependency_keys = required_phase0_dependency_keys.difference(
-                    dependency_keys,
-                )
-                if missing_dependency_keys:
-                    dependency_names = ", ".join(
-                        sorted(
-                            key.to_user_string()
-                            for key in missing_dependency_keys
-                        ),
-                    )
-                    raise ValueError(
-                        "phase1 graph_promotion asset must depend on a Phase 0 "
-                        "gate asset before it can be included in daily_cycle_job. "
-                        f"Missing: {dependency_names}.",
-                    )
+
+    phase1_asset_keys = frozenset(phase1_asset_defs)
+    for asset_key in phase1_asset_defs:
+        if _has_required_dependency_ancestry(
+            asset_key,
+            phase1_asset_defs,
+            required_phase0_dependency_keys,
+            phase1_asset_keys,
+            seen=frozenset(),
+        ):
+            continue
+
+        if asset_key == graph_snapshot_key:
+            raise ValueError(
+                "phase1 graph_snapshot asset must depend on graph_promotion "
+                "or directly on Phase 0 gate assets before it can be included "
+                "in daily_cycle_job. Missing Phase 0 ancestry: "
+                f"{_asset_key_names(required_phase0_dependency_keys)}.",
+            )
+        if asset_key == graph_promotion_key:
+            raise ValueError(
+                "phase1 graph_promotion asset must depend on Phase 0 gate "
+                "assets before it can be included in daily_cycle_job. Missing: "
+                f"{_asset_key_names(required_phase0_dependency_keys)}.",
+            )
+        raise ValueError(
+            "phase1 provider asset must depend on Phase 0 gate assets directly "
+            "or through another phase1 asset before it can be included in "
+            f"daily_cycle_job. Asset: {asset_key.to_user_string()}.",
+        )
 
 
 def _requires_milestone_surface() -> bool:
     forced = os.environ.get(_REQUIRE_MILESTONE_SURFACE_ENV)
     if forced is not None:
-        return forced.strip().lower() in _TRUTHY_ENV_VALUES
+        return _is_env_truthy(_REQUIRE_MILESTONE_SURFACE_ENV)
     return _is_milestone_surface_profile()
 
 
@@ -435,6 +451,39 @@ def _asset_dependency_keys(
         dependency_keys.update(raw_dependency_keys)
 
     return frozenset(dependency_keys)
+
+
+def _has_required_dependency_ancestry(
+    asset_key: AssetKey,
+    phase1_asset_defs: Mapping[AssetKey, object],
+    required_dependency_keys: frozenset[AssetKey],
+    phase1_asset_keys: frozenset[AssetKey],
+    *,
+    seen: frozenset[AssetKey],
+) -> bool:
+    if asset_key in seen:
+        return False
+
+    asset_def = phase1_asset_defs[asset_key]
+    dependency_keys = _asset_dependency_keys(asset_def, asset_key)
+    if required_dependency_keys.issubset(dependency_keys):
+        return True
+
+    next_seen = seen | frozenset({asset_key})
+    return any(
+        _has_required_dependency_ancestry(
+            dependency_key,
+            phase1_asset_defs,
+            required_dependency_keys,
+            phase1_asset_keys,
+            seen=next_seen,
+        )
+        for dependency_key in dependency_keys.intersection(phase1_asset_keys)
+    )
+
+
+def _asset_key_names(asset_keys: Iterable[AssetKey]) -> str:
+    return ", ".join(sorted(asset_key.to_user_string() for asset_key in asset_keys))
 
 
 def _data_readiness_resource(resources: Mapping[str, object]) -> object:

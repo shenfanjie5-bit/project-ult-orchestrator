@@ -112,10 +112,33 @@ def test_phase1_graph_promotion_without_phase0_dependency_is_rejected(
         )
 
 
+def test_phase1_graph_snapshot_without_ancestry_is_rejected(
+    dagster_module: object,
+    dagster_dbt_module: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
+
+    from orchestrator.definitions import build_definitions
+
+    provider, _graph_promotion, _graph_snapshot, _graph_check = _fake_graph_provider(
+        dagster,
+        snapshot_depends_on_promotion=False,
+    )
+
+    with pytest.raises(ValueError, match="phase1 graph_snapshot.*graph_promotion"):
+        build_definitions(
+            module_factories=[provider],
+            policy_path=stub_policy_path,
+        )
+
+
 def _fake_graph_provider(
     dagster: Any,
     *,
     include_phase0_dependency: bool = True,
+    snapshot_depends_on_promotion: bool = True,
 ) -> tuple[object, object, object, object]:
     from orchestrator.jobs.phase0 import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
@@ -140,12 +163,23 @@ def _fake_graph_provider(
     def graph_promotion() -> str:
         return "promoted"
 
-    @dagster.asset(
-        name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
-        group_name=PHASE1_GROUP_NAME,
-    )
-    def graph_snapshot(graph_promotion: str) -> str:
-        return f"snapshot:{graph_promotion}"
+    if snapshot_depends_on_promotion:
+
+        @dagster.asset(
+            name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+            group_name=PHASE1_GROUP_NAME,
+        )
+        def graph_snapshot(graph_promotion: str) -> str:
+            return f"snapshot:{graph_promotion}"
+
+    else:
+
+        @dagster.asset(
+            name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+            group_name=PHASE1_GROUP_NAME,
+        )
+        def graph_snapshot() -> str:
+            return "snapshot:independent"
 
     @dagster.asset_check(
         asset=graph_snapshot,
