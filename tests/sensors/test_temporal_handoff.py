@@ -260,7 +260,7 @@ def test_temporal_handoff_sensor_uses_client_from_resource_bundle_and_cursors_ru
     )
     sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    result = sensor_definition.evaluation_fn(context)
+    result = _evaluate_raw_sensor(sensor_definition, context)
 
     assert isinstance(result, SkipReason)
     assert "started" in result.skip_message
@@ -305,7 +305,7 @@ def test_temporal_handoff_sensor_cursor_does_not_reprocess_older_run(
     )
     sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    result = sensor_definition.evaluation_fn(context)
+    result = _evaluate_raw_sensor(sensor_definition, context)
 
     assert isinstance(result, SkipReason)
     assert "no successful daily_cycle_phase0_job run is ready" in result.skip_message
@@ -334,9 +334,9 @@ def test_temporal_handoff_sensor_processes_unseen_run_at_same_timestamp(
     )
     sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    first_result = sensor_definition.evaluation_fn(context)
-    second_result = sensor_definition.evaluation_fn(context)
-    third_result = sensor_definition.evaluation_fn(context)
+    first_result = _evaluate_raw_sensor(sensor_definition, context)
+    second_result = _evaluate_raw_sensor(sensor_definition, context)
+    third_result = _evaluate_raw_sensor(sensor_definition, context)
 
     assert isinstance(first_result, SkipReason)
     assert isinstance(second_result, SkipReason)
@@ -376,7 +376,7 @@ def test_temporal_handoff_sensor_legacy_cursor_stops_at_processed_run(
     )
     sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    result = sensor_definition.evaluation_fn(context)
+    result = _evaluate_raw_sensor(sensor_definition, context)
 
     assert isinstance(result, SkipReason)
     assert "no successful daily_cycle_phase0_job run is ready" in result.skip_message
@@ -395,6 +395,18 @@ def _tags() -> Mapping[str, str]:
         "scenario_id": "phase0_data_readiness_delayed",
         "runbook_url": "https://runbooks.example/phase0",
     }
+
+
+def _evaluate_raw_sensor(sensor_definition: object, context: object) -> object:
+    raw_fn = getattr(sensor_definition, "_raw_fn", None)
+    if callable(raw_fn):
+        return raw_fn(context)
+
+    evaluation_fn = getattr(sensor_definition, "evaluation_fn", None)
+    if callable(evaluation_fn):
+        return evaluation_fn(context)
+
+    raise AssertionError("sensor definition does not expose a raw evaluation function")
 
 
 def _phase0_run_record(

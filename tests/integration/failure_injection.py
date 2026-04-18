@@ -462,7 +462,7 @@ def _run_phase0_readiness_failure(
 ) -> FailureInjectionOutcome:
     from orchestrator.checks import DataReadinessSignal
     from orchestrator.checks.classifier import classify_gate_result
-    from orchestrator.sensors.data_readiness import data_readiness_sensor
+    from orchestrator.sensors.data_readiness import evaluate_data_readiness_sensor
 
     policy = load_gate_policy(stub_policy_path)
     signal = DataReadinessSignal(
@@ -484,7 +484,7 @@ def _run_phase0_readiness_failure(
     )
 
     with caplog.at_level(logging.WARNING, logger="orchestrator.alerting.dispatcher"):
-        sensor_result = data_readiness_sensor.evaluation_fn(context)
+        sensor_result = evaluate_data_readiness_sensor(context)
 
     return FailureInjectionOutcome(
         action=decision.action.value,

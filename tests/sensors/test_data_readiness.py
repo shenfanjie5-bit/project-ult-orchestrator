@@ -40,7 +40,10 @@ def _alert_payloads(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]
 def sensor_exports() -> dict[str, Any]:
     dagster = pytest.importorskip("dagster", reason="dagster is not installed")
 
-    from orchestrator.sensors import data_readiness_sensor
+    from orchestrator.sensors import (
+        data_readiness_sensor,
+        evaluate_data_readiness_sensor,
+    )
 
     return {
         "Definitions": dagster.Definitions,
@@ -48,6 +51,7 @@ def sensor_exports() -> dict[str, Any]:
         "SkipReason": dagster.SkipReason,
         "build_sensor_context": dagster.build_sensor_context,
         "data_readiness_sensor": data_readiness_sensor,
+        "evaluate_data_readiness_sensor": evaluate_data_readiness_sensor,
     }
 
 
@@ -57,7 +61,7 @@ def test_data_readiness_sensor_ready_returns_run_request(
 ) -> None:
     RunRequest = sensor_exports["RunRequest"]
     build_sensor_context = sensor_exports["build_sensor_context"]
-    data_readiness_sensor = sensor_exports["data_readiness_sensor"]
+    evaluate_data_readiness_sensor = sensor_exports["evaluate_data_readiness_sensor"]
     signal = DataReadinessSignal(ready=True, cycle_id="cycle-20260416")
     context = build_sensor_context(
         resources={
@@ -67,7 +71,7 @@ def test_data_readiness_sensor_ready_returns_run_request(
     )
 
     with caplog.at_level(logging.WARNING):
-        result = data_readiness_sensor.evaluation_fn(context)
+        result = evaluate_data_readiness_sensor(context)
 
     assert isinstance(result, RunRequest)
     assert result.run_key == "cycle-20260416"
@@ -82,7 +86,7 @@ def test_data_readiness_sensor_not_ready_returns_skip_reason(
 ) -> None:
     SkipReason = sensor_exports["SkipReason"]
     build_sensor_context = sensor_exports["build_sensor_context"]
-    data_readiness_sensor = sensor_exports["data_readiness_sensor"]
+    evaluate_data_readiness_sensor = sensor_exports["evaluate_data_readiness_sensor"]
     signal = DataReadinessSignal(
         ready=False,
         cycle_id="cycle-20260416",
@@ -95,7 +99,7 @@ def test_data_readiness_sensor_not_ready_returns_skip_reason(
         },
     )
 
-    result = data_readiness_sensor.evaluation_fn(context)
+    result = evaluate_data_readiness_sensor(context)
 
     assert isinstance(result, SkipReason)
     assert "market data delayed" in result.skip_message
@@ -106,7 +110,7 @@ def test_data_readiness_sensor_not_ready_dispatches_policy_alert(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     build_sensor_context = sensor_exports["build_sensor_context"]
-    data_readiness_sensor = sensor_exports["data_readiness_sensor"]
+    evaluate_data_readiness_sensor = sensor_exports["evaluate_data_readiness_sensor"]
     gate_policy = FakeGatePolicyResource().policy
     first_policy_row = gate_policy.phase_matrix[0]
     signal = DataReadinessSignal(
@@ -126,7 +130,7 @@ def test_data_readiness_sensor_not_ready_dispatches_policy_alert(
     assert first_policy_row.action is GateAction.FAIL_RUN
 
     with caplog.at_level(logging.WARNING):
-        data_readiness_sensor.evaluation_fn(context)
+        evaluate_data_readiness_sensor(context)
 
     payload = _alert_payloads(caplog)[-1]
 
@@ -181,7 +185,7 @@ def test_data_readiness_sensor_rejects_invalid_provider_signal(
     message: str,
 ) -> None:
     build_sensor_context = sensor_exports["build_sensor_context"]
-    data_readiness_sensor = sensor_exports["data_readiness_sensor"]
+    evaluate_data_readiness_sensor = sensor_exports["evaluate_data_readiness_sensor"]
     context = build_sensor_context(
         resources={
             "data_readiness": _RawReadinessResource(signal),
@@ -190,7 +194,7 @@ def test_data_readiness_sensor_rejects_invalid_provider_signal(
     )
 
     with pytest.raises(TypeError, match=message):
-        data_readiness_sensor.evaluation_fn(context)
+        evaluate_data_readiness_sensor(context)
 
 
 def test_data_readiness_sensor_name(sensor_exports: dict[str, Any]) -> None:
