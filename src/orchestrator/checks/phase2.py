@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Protocol
 
-from dagster import AssetCheckResult, ResourceParam, asset_check
+from dagster import (
+    AssetCheckExecutionContext,
+    AssetCheckResult,
+    ResourceParam,
+    asset_check,
+)
 
 from orchestrator.checks.classifier import classify_gate_result
 from orchestrator.checks.decision_handler import dispatch_gate_decision_alert
@@ -161,7 +166,7 @@ def build_phase2_pool_failure_rate_check(asset: object) -> object:
         blocking=True,
     )
     def phase2_pool_failure_rate_gate(
-        context: object,
+        context: AssetCheckExecutionContext,
         gate_policy: GatePolicyResource,
         phase2_pool_failure_rate: ResourceParam[Phase2PoolFailureRateProvider],
     ) -> AssetCheckResult:
