@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ _DBT_PROJECT_DIR = Path(
     os.environ.get("ORCHESTRATOR_DBT_PROJECT_DIR", _REPO_ROOT / "dbt_stub")
 ).expanduser()
 _DBT_MANIFEST_PATH = _DBT_PROJECT_DIR / "target" / "manifest.json"
+_PHASE0_SOURCE_PATH = _REPO_ROOT / "src" / "orchestrator" / "jobs" / "phase0.py"
 
 
 @pytest.fixture
@@ -48,6 +50,18 @@ def test_phase0_group_constants(phase0_module: Any) -> None:
     assert phase0_module.PHASE0_GRAPH_CONSISTENCY_CHECK_NAME == (
         "neo4j_graph_consistency_check"
     )
+
+
+def test_dbt_assets_context_parameter_is_unannotated() -> None:
+    phase0_module = ast.parse(_PHASE0_SOURCE_PATH.read_text())
+    function = next(
+        node
+        for node in phase0_module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "dbt_phase0_assets"
+    )
+    context_arg = next(arg for arg in function.args.args if arg.arg == "context")
+
+    assert context_arg.annotation is None
 
 
 def test_phase0_readiness_ping_asset_exists(
