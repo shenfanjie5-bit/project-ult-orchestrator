@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 from pathlib import Path
@@ -79,6 +80,15 @@ def test_phase0_readiness_ping_key_is_addressable(
     assert asset_key in phase0_readiness_ping.keys
 
 
+def test_dbt_phase0_assets_context_parameter_is_unannotated() -> None:
+    dbt_phase0_assets = _phase0_source_function("dbt_phase0_assets")
+    context_arg = next(
+        arg for arg in dbt_phase0_assets.args.args if arg.arg == "context"
+    )
+
+    assert context_arg.annotation is None
+
+
 def test_missing_dbt_manifest_fails_with_prepare_hint(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -93,6 +103,18 @@ def test_missing_dbt_manifest_fails_with_prepare_hint(
             __import__("orchestrator.jobs.phase0", fromlist=["phase0"])
     finally:
         _clear_phase0_imports()
+
+
+def _phase0_source_function(name: str) -> ast.FunctionDef:
+    module = ast.parse(
+        (_REPO_ROOT / "src" / "orchestrator" / "jobs" / "phase0.py").read_text(),
+    )
+    for node in module.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+
+    msg = f"{name} is not defined in phase0.py"
+    raise AssertionError(msg)
 
 
 def _clear_phase0_imports() -> None:
