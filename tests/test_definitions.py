@@ -61,9 +61,11 @@ def test_build_definitions_collects_p1a_surface(
     }
     assert AssetKey(["fake_phase0_asset"]) in _asset_keys(defs)
     assert AssetKey(["candidate_freeze"]) in _asset_keys(defs)
+    assert AssetKey(["graph_status"]) in _asset_keys(defs)
     assert "phase0_ping_check" in _check_names(defs)
     assert "llm_health_check" in _check_names(defs)
     assert "fake_phase0_check" in _check_names(defs)
+    assert "neo4j_graph_consistency_check" in _check_names(defs)
     assert "gate_policy" in defs.resources
     assert "resource_bundle" in defs.resources
     assert "data_readiness" in defs.resources
@@ -264,9 +266,11 @@ def test_module_level_defs_loads_configured_milestone_surface(
         defs = definitions_module.defs
 
         assert dagster.AssetKey(["candidate_freeze"]) in _asset_keys(defs)
+        assert dagster.AssetKey(["graph_status"]) in _asset_keys(defs)
         assert "data_readiness" in defs.resources
         assert "data_readiness_provider" in defs.resources
         assert "llm_health_probe" in defs.resources
+        assert "neo4j_graph_consistency_check" in _check_names(defs)
     finally:
         _clear_definition_imports()
 
@@ -419,7 +423,52 @@ def test_phase0_provider_missing_candidate_freeze_is_rejected(
         build_definitions(module_factories=[MissingCandidateProvider()])
 
 
-def _fake_provider(dagster: Any) -> object:
+def test_milestone_surface_missing_graph_gate_is_rejected(
+    definitions_exports: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_definitions = definitions_exports["build_definitions"]
+    dagster = definitions_exports["dagster"]
+
+    monkeypatch.setenv("ORCHESTRATOR_DEFINITIONS_PROFILE", "milestone-1")
+
+    with pytest.raises(
+        RuntimeError,
+        match="graph_status asset.*neo4j_graph_consistency_check",
+    ):
+        build_definitions(
+            module_factories=[_fake_provider(dagster, include_graph_gate=False)],
+            policy_path="config/policy/gate_policy.lite.yaml",
+        )
+
+
+def test_milestone_surface_missing_graph_consistency_check_is_rejected(
+    definitions_exports: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build_definitions = definitions_exports["build_definitions"]
+    dagster = definitions_exports["dagster"]
+
+    monkeypatch.setenv("ORCHESTRATOR_DEFINITIONS_PROFILE", "milestone-1")
+
+    with pytest.raises(
+        RuntimeError,
+        match="neo4j_graph_consistency_check AssetCheck",
+    ):
+        build_definitions(
+            module_factories=[
+                _fake_provider(dagster, include_graph_consistency_check=False),
+            ],
+            policy_path="config/policy/gate_policy.lite.yaml",
+        )
+
+
+def _fake_provider(
+    dagster: Any,
+    *,
+    include_graph_gate: bool = True,
+    include_graph_consistency_check: bool = True,
+) -> object:
     class FakeDataPlatformResource(dagster.ConfigurableResource):
         def create_resource(self, context: object) -> dict[str, str]:
             return {"status": "ok"}
@@ -453,16 +502,34 @@ def _fake_provider(dagster: Any) -> object:
     def candidate_freeze() -> str:
         return "ok"
 
+    @dagster.asset(name="graph_status", group_name="phase0")
+    def graph_status(candidate_freeze: str) -> str:
+        return f"{candidate_freeze}:ready"
+
     @dagster.asset_check(asset=fake_phase0_asset, name="fake_phase0_check")
     def fake_phase0_check() -> object:
         return dagster.AssetCheckResult(passed=True)
 
+    @dagster.asset_check(
+        asset=graph_status,
+        name="neo4j_graph_consistency_check",
+        blocking=True,
+    )
+    def neo4j_graph_consistency_check() -> object:
+        return dagster.AssetCheckResult(passed=True)
+
     class FakeDataPlatformProvider:
         def get_assets(self) -> tuple[object, ...]:
-            return (fake_phase0_asset, candidate_freeze)
+            assets = (fake_phase0_asset, candidate_freeze)
+            if include_graph_gate:
+                return (*assets, graph_status)
+            return assets
 
         def get_checks(self) -> tuple[object, ...]:
-            return (fake_phase0_check,)
+            checks = (fake_phase0_check,)
+            if include_graph_gate and include_graph_consistency_check:
+                return (*checks, neo4j_graph_consistency_check)
+            return checks
 
         def get_resources(self) -> dict[str, object]:
             return {

@@ -31,6 +31,7 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
     from orchestrator.jobs.audit import RETROSPECTIVE_HOOK_ASSET_KEY
     from orchestrator.jobs.phase0 import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_GRAPH_STATUS_ASSET_KEY,
         PHASE0_READINESS_ASSET_KEY,
         dbt_phase0_assets,
     )
@@ -83,6 +84,7 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
     )
 
     candidate_freeze_key = dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY])
+    graph_status_key = dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY])
     graph_promotion_key = dagster.AssetKey([PHASE1_GRAPH_PROMOTION_ASSET_KEY])
     formal_commit_key = dagster.AssetKey([PHASE3_FORMAL_COMMIT_ASSET_KEY])
     manifest_key = dagster.AssetKey([PHASE3_MANIFEST_ASSET_KEY])
@@ -91,6 +93,7 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
         dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
         heartbeat_key,
         candidate_freeze_key,
+        graph_status_key,
         graph_promotion_key,
         dagster.AssetKey([PHASE1_GRAPH_SNAPSHOT_ASSET_KEY]),
         *(dagster.AssetKey([stage]) for stage in PHASE2_STAGE_KEYS),
@@ -109,6 +112,9 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
         candidate_freeze_key,
     )
     assert materialized_order.index(candidate_freeze_key) < materialized_order.index(
+        graph_status_key,
+    )
+    assert materialized_order.index(graph_status_key) < materialized_order.index(
         graph_promotion_key,
     )
     assert materialized_order.index(formal_commit_key) < materialized_order.index(
@@ -120,6 +126,7 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
     assert {
         "phase0_ping_check",
         "llm_health_check",
+        "neo4j_graph_consistency_check",
         "fake_phase1_graph_snapshot_pure_check",
         "fake_phase2_l7_pure_check",
         "fake_phase3_manifest_pure_check",
@@ -133,6 +140,8 @@ def fake_data_platform_reasoner_provider(
     from orchestrator.checks import DataReadinessSignal
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+        PHASE0_GRAPH_STATUS_ASSET_KEY,
         PHASE0_GROUP_NAME,
     )
     from orchestrator.sensors.data_readiness import DATA_READINESS_RESOURCE_KEY
@@ -174,12 +183,28 @@ def fake_data_platform_reasoner_provider(
     def candidate_freeze() -> str:
         return "frozen"
 
+    @dagster.asset(
+        name=PHASE0_GRAPH_STATUS_ASSET_KEY,
+        group_name=PHASE0_GROUP_NAME,
+        deps=[dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY])],
+    )
+    def graph_status() -> str:
+        return "ready"
+
+    @dagster.asset_check(
+        asset=graph_status,
+        name=PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+        blocking=True,
+    )
+    def neo4j_graph_consistency_check() -> object:
+        return dagster.AssetCheckResult(passed=True)
+
     class FakeDataPlatformReasonerProvider:
         def get_assets(self) -> tuple[object, ...]:
-            return (candidate_freeze,)
+            return (candidate_freeze, graph_status)
 
         def get_checks(self) -> tuple[object, ...]:
-            return ()
+            return (neo4j_graph_consistency_check,)
 
         def get_resources(self) -> dict[str, object]:
             return {
@@ -196,6 +221,7 @@ def fake_data_platform_reasoner_provider(
 def fake_graph_engine_provider(dagster: Any) -> AssetFactoryProvider:
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_GRAPH_STATUS_ASSET_KEY,
         PHASE0_READINESS_ASSET_KEY,
     )
     from orchestrator.jobs.phase1 import (
@@ -210,6 +236,7 @@ def fake_graph_engine_provider(dagster: Any) -> AssetFactoryProvider:
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
         ],
     )
     def graph_promotion() -> str:

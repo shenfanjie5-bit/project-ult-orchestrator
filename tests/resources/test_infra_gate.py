@@ -122,9 +122,35 @@ def test_infrastructure_registry_includes_core_storage_and_graph_backends() -> N
     } <= infra.CORE_INFRASTRUCTURE_RESOURCE_KEYS
     assert infra.INFRASTRUCTURE_RESOURCE_PHASES["postgres_engine"] is PhaseEnum.PHASE0
     assert infra.INFRASTRUCTURE_RESOURCE_PHASES["iceberg_catalog"] is PhaseEnum.PHASE0
-    assert infra.INFRASTRUCTURE_RESOURCE_PHASES["neo4j_driver"] is PhaseEnum.PHASE1
+    assert infra.INFRASTRUCTURE_RESOURCE_PHASES["neo4j_driver"] is PhaseEnum.PHASE0
     assert set(infra.INFRASTRUCTURE_RESOURCE_REGISTRY) == set(
         infra.CORE_INFRASTRUCTURE_RESOURCE_KEYS,
+    )
+
+
+def test_guarded_graph_backend_method_failure_is_classified() -> None:
+    infra = _infra_module()
+
+    class LazyFailingNeo4jDriver:
+        def execute_query(self) -> object:
+            raise RuntimeError("connection reset")
+
+    guarded = infra._GuardedInfrastructureValue(
+        resource_key="neo4j_driver",
+        value=LazyFailingNeo4jDriver(),
+        phase=PhaseEnum.PHASE0,
+        policy_path=str(LITE_POLICY_PATH),
+        context=object(),
+    )
+
+    with pytest.raises(infra.InfrastructureUnavailableError) as exc_info:
+        guarded.execute_query()
+
+    assert exc_info.value.event.resource_key == "neo4j_driver"
+    assert exc_info.value.event.phase is PhaseEnum.PHASE0
+    assert exc_info.value.decision.action is GateAction.FAIL_RUN
+    assert exc_info.value.decision.scenario_id == (
+        infra.INFRA_UNAVAILABLE_HARD_STOP_SCENARIO_ID
     )
 
 

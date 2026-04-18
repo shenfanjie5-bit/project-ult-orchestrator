@@ -130,7 +130,7 @@ def test_build_definitions_alerts_when_provider_get_resources_fails(
 
     assert error.value.event.resource_key == "neo4j_driver"
     assert error.value.decision.action.value == "fail_run"
-    assert payload["phase"] == "phase1"
+    assert payload["phase"] == "phase0"
     assert payload["failure_class"] == "infra"
     assert payload["action"] == "fail_run"
     assert payload["failed_node"] == "neo4j_driver"
@@ -181,6 +181,8 @@ def _fake_phase0_surface_provider(
     from orchestrator.checks import DataReadinessSignal
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+        PHASE0_GRAPH_STATUS_ASSET_KEY,
         PHASE0_GROUP_NAME,
         PHASE0_READINESS_ASSET_KEY,
     )
@@ -240,12 +242,31 @@ def _fake_phase0_surface_provider(
     ) -> str:
         return "frozen"
 
+    @dagster.asset(
+        name=PHASE0_GRAPH_STATUS_ASSET_KEY,
+        group_name=PHASE0_GROUP_NAME,
+    )
+    def graph_status(
+        candidate_freeze: str,
+        neo4j_driver: dagster.ResourceParam[object],
+    ) -> str:
+        del candidate_freeze, neo4j_driver
+        return "ready"
+
+    @dagster.asset_check(
+        asset=graph_status,
+        name=PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+        blocking=True,
+    )
+    def neo4j_graph_consistency_check() -> object:
+        return dagster.AssetCheckResult(passed=True)
+
     class FakePhase0SurfaceProvider:
         def get_assets(self) -> tuple[object, ...]:
-            return (candidate_freeze,)
+            return (candidate_freeze, graph_status)
 
         def get_checks(self) -> tuple[object, ...]:
-            return ()
+            return (neo4j_graph_consistency_check,)
 
         def get_resources(self) -> dict[str, object]:
             data_readiness_resource: object
@@ -286,6 +307,7 @@ def _fake_phase0_surface_provider(
 def _fake_phase1_provider(dagster: Any, failing_resource_key: str) -> object:
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_GRAPH_STATUS_ASSET_KEY,
         PHASE0_READINESS_ASSET_KEY,
     )
     from orchestrator.jobs.phase1 import (
@@ -300,6 +322,7 @@ def _fake_phase1_provider(dagster: Any, failing_resource_key: str) -> object:
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
         ],
     )
     def graph_promotion(neo4j_driver: dagster.ResourceParam[object]) -> str:

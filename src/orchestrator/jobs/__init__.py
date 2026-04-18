@@ -19,6 +19,14 @@ _PUBLIC_JOB_IMPORTS = {
         "orchestrator.jobs.phase0",
         "PHASE0_CANDIDATE_FREEZE_ASSET_KEY",
     ),
+    "PHASE0_GRAPH_CONSISTENCY_CHECK_NAME": (
+        "orchestrator.jobs.phase0",
+        "PHASE0_GRAPH_CONSISTENCY_CHECK_NAME",
+    ),
+    "PHASE0_GRAPH_STATUS_ASSET_KEY": (
+        "orchestrator.jobs.phase0",
+        "PHASE0_GRAPH_STATUS_ASSET_KEY",
+    ),
     "PHASE0_GROUP_NAME": ("orchestrator.jobs.phase0", "PHASE0_GROUP_NAME"),
     "PHASE0_READINESS_ASSET_KEY": (
         "orchestrator.jobs.phase0",
@@ -67,6 +75,8 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "AUDIT_EVAL_GROUP_NAME",
     "PHASE0_CANDIDATE_FREEZE_ASSET_KEY",
+    "PHASE0_GRAPH_CONSISTENCY_CHECK_NAME",
+    "PHASE0_GRAPH_STATUS_ASSET_KEY",
     "PHASE0_GROUP_NAME",
     "PHASE0_READINESS_ASSET_KEY",
     "PHASE0_REQUIRED_ASSET_KEYS",

@@ -16,6 +16,8 @@ from orchestrator.checks.models import DataReadinessSignal, GateDecision
 from orchestrator.jobs.audit import AUDIT_EVAL_GROUP_NAME, RETROSPECTIVE_HOOK_ASSET_KEY
 from orchestrator.jobs.phase0_constants import (
     PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+    PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+    PHASE0_GRAPH_STATUS_ASSET_KEY,
     PHASE0_GROUP_NAME,
     PHASE0_READINESS_ASSET_KEY,
 )
@@ -63,7 +65,7 @@ _PHASES = (
 _RERUN_REQUEST_DIR_ENV = "ORCHESTRATOR_RERUN_REQUEST_DIR"
 _MANIFEST_REPAIR_ASSET_KEY_ENV = "ORCHESTRATOR_MANIFEST_REPAIR_ASSET_KEY"
 _PHASE_TERMINAL_ASSETS = {
-    PhaseEnum.PHASE0: PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+    PhaseEnum.PHASE0: PHASE0_GRAPH_STATUS_ASSET_KEY,
     PhaseEnum.PHASE1: PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
     PhaseEnum.PHASE2: PHASE2_STAGE_KEYS[-1],
     PhaseEnum.PHASE3: PHASE3_MANIFEST_ASSET_KEY,
@@ -73,6 +75,7 @@ _PHASE_ASSET_NAMES = {
         {
             PHASE0_READINESS_ASSET_KEY,
             PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+            PHASE0_GRAPH_STATUS_ASSET_KEY,
             "heartbeat",
         }
     ),
@@ -298,11 +301,20 @@ class TemporalParityFakeProvider:
             return "frozen"
 
         @dagster.asset(
+            name=PHASE0_GRAPH_STATUS_ASSET_KEY,
+            group_name=PHASE0_GROUP_NAME,
+        )
+        def graph_status(candidate_freeze: str) -> str:
+            owner._mark_phase(PhaseEnum.PHASE0)
+            return f"{candidate_freeze}:ready"
+
+        @dagster.asset(
             name=PHASE1_GRAPH_PROMOTION_ASSET_KEY,
             group_name=PHASE1_GROUP_NAME,
             deps=[
                 dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
                 dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+                dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
             ],
         )
         def graph_promotion() -> str:
@@ -387,6 +399,7 @@ class TemporalParityFakeProvider:
 
         return (
             candidate_freeze,
+            graph_status,
             graph_promotion,
             graph_snapshot,
             l1,
@@ -407,12 +420,21 @@ class TemporalParityFakeProvider:
         dagster = self._dagster
         assets = {next(iter(asset.keys)).path[-1]: asset for asset in self._assets}
         candidate_freeze = assets[PHASE0_CANDIDATE_FREEZE_ASSET_KEY]
+        graph_status = assets[PHASE0_GRAPH_STATUS_ASSET_KEY]
         graph_snapshot = assets[PHASE1_GRAPH_SNAPSHOT_ASSET_KEY]
         l7 = assets[PHASE2_STAGE_KEYS[-1]]
         formal_objects_commit = assets[PHASE3_FORMAL_COMMIT_ASSET_KEY]
         cycle_publish_manifest = assets[PHASE3_MANIFEST_ASSET_KEY]
         retrospective_hook = assets[RETROSPECTIVE_HOOK_ASSET_KEY]
         owner = self
+
+        @dagster.asset_check(
+            asset=graph_status,
+            name=PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+            blocking=True,
+        )
+        def neo4j_graph_consistency_check() -> object:
+            return dagster.AssetCheckResult(passed=True)
 
         @dagster.asset_check(
             asset=candidate_freeze,
@@ -596,6 +618,7 @@ class TemporalParityFakeProvider:
             return dagster.AssetCheckResult(passed=True)
 
         return (
+            neo4j_graph_consistency_check,
             phase0_dbt_partial_rerun_gate,
             phase0_infra_hard_stop_gate,
             phase1_infra_hard_stop_gate,
