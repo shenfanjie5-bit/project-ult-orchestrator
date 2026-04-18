@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 from pathlib import Path
@@ -77,6 +78,30 @@ def test_phase0_readiness_ping_key_is_addressable(
 
     assert phase0_readiness_ping.key == asset_key
     assert asset_key in phase0_readiness_ping.keys
+
+
+def test_dbt_phase0_assets_context_is_unannotated_for_dagster_19() -> None:
+    phase0_path = _REPO_ROOT / "src" / "orchestrator" / "jobs" / "phase0.py"
+    tree = ast.parse(phase0_path.read_text())
+    dbt_asset_function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "dbt_phase0_assets"
+    )
+    context_arg = dbt_asset_function.args.args[0]
+
+    assert context_arg.arg == "context"
+    assert context_arg.annotation is None
+
+
+def test_dbt_phase0_assets_imports_under_supported_dagster_range(
+    phase0_module: Any,
+) -> None:
+    dagster = pytest.importorskip("dagster", reason="dagster is not installed")
+
+    defs = dagster.Definitions(assets=[phase0_module.dbt_phase0_assets])
+
+    assert isinstance(defs, dagster.Definitions)
 
 
 def test_missing_dbt_manifest_fails_with_prepare_hint(
