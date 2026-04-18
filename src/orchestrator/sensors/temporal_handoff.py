@@ -160,10 +160,6 @@ def build_temporal_handoff_sensor(
 
     return _temporal_handoff_sensor
 
-
-temporal_handoff_sensor = build_temporal_handoff_sensor()
-
-
 def _failover_run_request(
     *,
     failover_job_name: str,
@@ -557,6 +553,9 @@ def _job_name(job: object) -> str:
     if isinstance(name, str) and name:
         return name
     raise TypeError("Dagster job must expose a non-empty name")
+
+
+temporal_handoff_sensor = build_temporal_handoff_sensor()
 
 
 __all__ = [
