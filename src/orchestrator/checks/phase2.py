@@ -10,6 +10,11 @@ from typing import Protocol
 from orchestrator.checks.classifier import classify_gate_result
 from orchestrator.checks.decision_handler import dispatch_gate_decision_alert
 from orchestrator.checks.models import GateDecision
+# Import GatePolicyResource at module level so Dagster's @asset_check decorator
+# can resolve string annotations under `from __future__ import annotations`.
+# Without this, Dagster 1.9 raises DagsterInvalidDefinitionError trying to
+# resolve "GatePolicyResource" from a function-local scope.
+from orchestrator.checks.resources import GatePolicyResource
 from orchestrator.policy import FailureClass, GateAction, GatePolicyProfile, PhaseEnum
 
 _POOL_FAILURE_RATE_KEY = "phase2_pool_failure_rate"
@@ -149,8 +154,6 @@ def build_phase2_pool_failure_rate_check(asset: object) -> object:
     """Build the production Dagster AssetCheck for the Phase 2 pool gate."""
 
     from dagster import AssetCheckResult, ResourceParam, asset_check
-
-    from orchestrator.checks.resources import GatePolicyResource
 
     @asset_check(
         asset=asset,
