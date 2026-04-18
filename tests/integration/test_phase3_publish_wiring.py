@@ -227,14 +227,22 @@ def _fake_phase0_surface_provider(dagster: Any) -> object:
         def create_resource(self, context: object) -> FakeDataReadinessProvider:
             return FakeDataReadinessProvider()
 
-    class FakeLLMHealthResult:
-        healthy = True
-        summary = "provider ready"
+    class FakeProviderHealthStatus:
         provider = "fake-llm"
+        model = "critical-model"
+        reachable = True
+        latency_ms = 12.0
+        quota_status = "available"
+        error = None
+
+    class FakeLLMHealthReport:
+        provider_statuses = (FakeProviderHealthStatus(),)
+        all_critical_targets_available = True
+        summary = "provider ready"
 
     class FakeLLMHealthProbe:
-        def check_health(self) -> FakeLLMHealthResult:
-            return FakeLLMHealthResult()
+        def check_health(self) -> FakeLLMHealthReport:
+            return FakeLLMHealthReport()
 
     class FakeLLMHealthProbeResource(dagster.ConfigurableResource):
         def create_resource(self, context: object) -> FakeLLMHealthProbe:

@@ -9,8 +9,9 @@ from orchestrator.checks.dbt_events import (
 from orchestrator.checks.models import (
     DataReadinessSignal,
     GateDecision,
+    HealthCheckReport,
     LLMHealthProbe,
-    LLMHealthResult,
+    ProviderHealthStatus,
 )
 from orchestrator.checks.phase1 import (
     GraphPromotionFailureEvent,
@@ -64,14 +65,15 @@ __all__ = [
     "GateDecision",
     "GatePolicyResource",
     "GraphPromotionFailureEvent",
+    "HealthCheckReport",
     "LLMHealthProbe",
-    "LLMHealthResult",
     "ManifestWriteFailureEvent",
     "PHASE2_POOL_FAILURE_RATE_CHECK_NAME",
     "PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY",
     "Phase2PoolFailureRateEvent",
     "Phase2PoolFailureRateProvider",
     "Phase2SingleStockFailureEvent",
+    "ProviderHealthStatus",
     "PhaseEnum",
     "UnknownGateFailure",
     "build_phase2_pool_failure_rate_check",

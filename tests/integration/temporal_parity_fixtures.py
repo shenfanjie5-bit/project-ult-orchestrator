@@ -1914,18 +1914,37 @@ class _LLMHealthProbe:
 
     def check_health(self) -> object:
         healthy = not self._owner._is_case("phase0_llm_health_check_failed")
-        return _LLMHealthResult(
-            healthy=healthy,
+        return _LLMHealthReport(
+            provider_statuses=(
+                _ProviderHealthStatus(
+                    provider=self.provider,
+                    model="critical-model",
+                    reachable=healthy,
+                    latency_ms=12.0 if healthy else None,
+                    quota_status="available" if healthy else "unavailable",
+                    error=None if healthy else "provider unavailable",
+                ),
+            ),
+            all_critical_targets_available=healthy,
             summary="provider ready" if healthy else "provider unavailable",
-            provider=self.provider,
         )
 
 
 @dataclass(frozen=True, slots=True)
-class _LLMHealthResult:
-    healthy: bool
+class _ProviderHealthStatus:
+    provider: str
+    model: str
+    reachable: bool
+    latency_ms: float | None
+    quota_status: str
+    error: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _LLMHealthReport:
+    provider_statuses: tuple[_ProviderHealthStatus, ...]
+    all_critical_targets_available: bool
     summary: str
-    provider: str | None
 
 
 class _GatePolicy:
