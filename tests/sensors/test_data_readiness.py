@@ -67,7 +67,7 @@ def test_data_readiness_sensor_ready_returns_run_request(
     )
 
     with caplog.at_level(logging.WARNING):
-        result = data_readiness_sensor.evaluation_fn(context)
+        result = _evaluate_sensor(data_readiness_sensor, context)
 
     assert isinstance(result, RunRequest)
     assert result.run_key == "cycle-20260416"
@@ -95,7 +95,7 @@ def test_data_readiness_sensor_not_ready_returns_skip_reason(
         },
     )
 
-    result = data_readiness_sensor.evaluation_fn(context)
+    result = _evaluate_sensor(data_readiness_sensor, context)
 
     assert isinstance(result, SkipReason)
     assert "market data delayed" in result.skip_message
@@ -126,7 +126,7 @@ def test_data_readiness_sensor_not_ready_dispatches_policy_alert(
     assert first_policy_row.action is GateAction.FAIL_RUN
 
     with caplog.at_level(logging.WARNING):
-        data_readiness_sensor.evaluation_fn(context)
+        _evaluate_sensor(data_readiness_sensor, context)
 
     payload = _alert_payloads(caplog)[-1]
 
@@ -190,7 +190,7 @@ def test_data_readiness_sensor_rejects_invalid_provider_signal(
     )
 
     with pytest.raises(TypeError, match=message):
-        data_readiness_sensor.evaluation_fn(context)
+        _evaluate_sensor(data_readiness_sensor, context)
 
 
 def test_data_readiness_sensor_name(sensor_exports: dict[str, Any]) -> None:
@@ -264,3 +264,16 @@ def _target_name(definition: Any) -> str | None:
             if isinstance(value, str):
                 return value
     return None
+
+
+def _evaluate_sensor(sensor_definition: Any, context: Any) -> Any:
+    evaluation_fn = getattr(sensor_definition, "evaluation_fn", None)
+    if evaluation_fn is None:
+        evaluation_fn = getattr(sensor_definition, "_evaluation_fn", None)
+    if evaluation_fn is None:
+        return sensor_definition(context)
+
+    result = evaluation_fn(context)
+    if isinstance(result, list) and len(result) == 1:
+        return result[0]
+    return result

@@ -1,5 +1,7 @@
 import ast
 import os
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -24,8 +26,7 @@ def asset_key_type() -> Any:
 def phase0_module() -> Any:
     pytest.importorskip("dagster", reason="dagster is not installed")
     pytest.importorskip("dagster_dbt", reason="dagster-dbt is not installed")
-    if not _DBT_MANIFEST_PATH.exists():
-        pytest.skip("dbt manifest is not compiled; run make dbt-compile")
+    _ensure_dbt_manifest()
 
     from orchestrator.jobs import phase0
 
@@ -98,8 +99,23 @@ def test_dbt_phase0_assets_imports_under_supported_dagster_range(
     phase0_module: Any,
 ) -> None:
     dagster = pytest.importorskip("dagster", reason="dagster is not installed")
+    from dagster_dbt import DbtCliResource
 
-    defs = dagster.Definitions(assets=[phase0_module.dbt_phase0_assets])
+    from orchestrator.checks.resources import GatePolicyResource
+
+    defs = dagster.Definitions(
+        assets=[phase0_module.dbt_phase0_assets],
+        resources={
+            "dbt": DbtCliResource(
+                project_dir=str(phase0_module.DBT_PROJECT_DIR),
+                profiles_dir=str(phase0_module.DBT_PROFILES_DIR),
+            ),
+            "gate_policy": GatePolicyResource(
+                policy_path="config/policy/gate_policy.lite.yaml",
+            ),
+        },
+    )
+    dagster.Definitions.validate_loadable(defs)
 
     assert isinstance(defs, dagster.Definitions)
 
@@ -126,3 +142,38 @@ def _clear_phase0_imports() -> None:
             sys.modules.pop(module_name, None)
         elif module_name.startswith("orchestrator.jobs."):
             sys.modules.pop(module_name, None)
+
+
+def _ensure_dbt_manifest() -> None:
+    if _DBT_MANIFEST_PATH.exists():
+        return
+
+    dbt_executable = shutil.which("dbt")
+    if dbt_executable is None:
+        pytest.fail(
+            "dbt manifest is missing and dbt CLI is unavailable; "
+            "install dev dependencies or run make dbt-compile",
+        )
+
+    result = subprocess.run(
+        [
+            dbt_executable,
+            "compile",
+            "--profiles-dir",
+            str(_DBT_PROJECT_DIR),
+            "--project-dir",
+            str(_DBT_PROJECT_DIR),
+        ],
+        cwd=_DBT_PROJECT_DIR,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode == 0 and _DBT_MANIFEST_PATH.exists():
+        return
+
+    pytest.fail(
+        "dbt manifest is missing and dbt compile failed.\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}",
+    )

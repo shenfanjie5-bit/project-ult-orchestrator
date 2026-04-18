@@ -484,7 +484,7 @@ def _run_phase0_readiness_failure(
     )
 
     with caplog.at_level(logging.WARNING, logger="orchestrator.alerting.dispatcher"):
-        sensor_result = data_readiness_sensor.evaluation_fn(context)
+        sensor_result = evaluate_sensor(data_readiness_sensor, context)
 
     return FailureInjectionOutcome(
         action=decision.action.value,
@@ -1432,6 +1432,19 @@ def expected_request_from_plan(
     )
 
 
+def evaluate_sensor(sensor_definition: object, context: object) -> object:
+    evaluation_fn = getattr(sensor_definition, "evaluation_fn", None)
+    if evaluation_fn is None:
+        evaluation_fn = getattr(sensor_definition, "_evaluation_fn", None)
+    if evaluation_fn is None:
+        return sensor_definition(context)  # type: ignore[operator]
+
+    result = evaluation_fn(context)
+    if isinstance(result, list) and len(result) == 1:
+        return result[0]
+    return result
+
+
 __all__ = [
     "FailureInjectionCase",
     "FailureInjectionOutcome",
@@ -1454,6 +1467,7 @@ __all__ = [
     "heartbeat_asset_key",
     "last_alert_payload",
     "rerun_request_payloads",
+    "evaluate_sensor",
     "single_alert_for_failed_node",
     "single_evaluation",
 ]

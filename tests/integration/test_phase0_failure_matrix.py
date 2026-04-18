@@ -83,7 +83,7 @@ def test_readiness_not_ready_fails_phase0_alerts_and_skips(
         policy,
     )
     with caplog.at_level(logging.WARNING):
-        result = data_readiness_sensor.evaluation_fn(context)
+        result = _evaluate_sensor(data_readiness_sensor, context)
 
     alert = _alert_payloads(caplog)[-1]
 
@@ -399,3 +399,16 @@ def _heartbeat_asset_key(dbt_phase0_assets: object) -> object:
         if path and path[-1] == "heartbeat":
             return asset_key
     pytest.fail("dbt heartbeat model asset key was not registered")
+
+
+def _evaluate_sensor(sensor_definition: object, context: object) -> object:
+    evaluation_fn = getattr(sensor_definition, "evaluation_fn", None)
+    if evaluation_fn is None:
+        evaluation_fn = getattr(sensor_definition, "_evaluation_fn", None)
+    if evaluation_fn is None:
+        return sensor_definition(context)  # type: ignore[operator]
+
+    result = evaluation_fn(context)
+    if isinstance(result, list) and len(result) == 1:
+        return result[0]
+    return result

@@ -260,7 +260,7 @@ def test_temporal_handoff_sensor_uses_client_from_resource_bundle_and_cursors_ru
     )
     sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    result = sensor_definition.evaluation_fn(context)
+    result = _evaluate_sensor(sensor_definition, context)
 
     assert isinstance(result, SkipReason)
     assert "started" in result.skip_message
@@ -305,7 +305,7 @@ def test_temporal_handoff_sensor_cursor_does_not_reprocess_older_run(
     )
     sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    result = sensor_definition.evaluation_fn(context)
+    result = _evaluate_sensor(sensor_definition, context)
 
     assert isinstance(result, SkipReason)
     assert "no successful daily_cycle_phase0_job run is ready" in result.skip_message
@@ -334,9 +334,9 @@ def test_temporal_handoff_sensor_processes_unseen_run_at_same_timestamp(
     )
     sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    first_result = sensor_definition.evaluation_fn(context)
-    second_result = sensor_definition.evaluation_fn(context)
-    third_result = sensor_definition.evaluation_fn(context)
+    first_result = _evaluate_sensor(sensor_definition, context)
+    second_result = _evaluate_sensor(sensor_definition, context)
+    third_result = _evaluate_sensor(sensor_definition, context)
 
     assert isinstance(first_result, SkipReason)
     assert isinstance(second_result, SkipReason)
@@ -376,7 +376,7 @@ def test_temporal_handoff_sensor_legacy_cursor_stops_at_processed_run(
     )
     sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    result = sensor_definition.evaluation_fn(context)
+    result = _evaluate_sensor(sensor_definition, context)
 
     assert isinstance(result, SkipReason)
     assert "no successful daily_cycle_phase0_job run is ready" in result.skip_message
@@ -438,3 +438,16 @@ class _FakeTemporalSensorContext:
     def update_cursor(self, cursor: str) -> None:
         self.updated_cursor = cursor
         self.cursor = cursor
+
+
+def _evaluate_sensor(sensor_definition: Any, context: Any) -> Any:
+    evaluation_fn = getattr(sensor_definition, "evaluation_fn", None)
+    if evaluation_fn is None:
+        evaluation_fn = getattr(sensor_definition, "_evaluation_fn", None)
+    if evaluation_fn is None:
+        return sensor_definition(context)
+
+    result = evaluation_fn(context)
+    if isinstance(result, list) and len(result) == 1:
+        return result[0]
+    return result
