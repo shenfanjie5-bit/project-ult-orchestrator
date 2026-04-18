@@ -1,4 +1,5 @@
 import ast
+import importlib
 import os
 import sys
 from pathlib import Path
@@ -92,6 +93,64 @@ def test_dbt_assets_context_parameter_is_unannotated() -> None:
 
     assert context_arg.arg == "context"
     assert context_arg.annotation is None
+
+
+def test_dbt_assets_definition_loads_under_dagster_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dagster, DbtCliResource = _dagster_runtime_for_regression()
+    _require_manifest_for_regression()
+
+    monkeypatch.setenv("ORCHESTRATOR_DBT_PROJECT_DIR", str(_DBT_PROJECT_DIR))
+    _clear_phase0_imports()
+
+    try:
+        from orchestrator.checks.resources import GatePolicyResource
+
+        phase0 = importlib.import_module("orchestrator.jobs.phase0")
+        definitions = dagster.Definitions(
+            assets=[phase0.dbt_phase0_assets],
+            resources={
+                "dbt": DbtCliResource(
+                    project_dir=str(phase0.DBT_PROJECT_DIR),
+                    profiles_dir=str(phase0.DBT_PROFILES_DIR),
+                ),
+                "gate_policy": GatePolicyResource(
+                    policy_path="config/policy/gate_policy.lite.yaml",
+                ),
+            },
+        )
+
+        dagster.Definitions.validate_loadable(definitions)
+    finally:
+        _clear_phase0_imports()
+
+
+def _dagster_runtime_for_regression() -> tuple[Any, Any]:
+    try:
+        import dagster
+        from dagster_dbt import DbtCliResource
+    except ImportError as exc:
+        message = f"Dagster toolchain import failed: {exc}"
+        if _running_in_ci():
+            pytest.fail(message)
+        pytest.skip(message)
+
+    return dagster, DbtCliResource
+
+
+def _require_manifest_for_regression() -> None:
+    if _DBT_MANIFEST_PATH.exists():
+        return
+
+    message = "dbt manifest is not compiled; run make dbt-compile before pytest"
+    if _running_in_ci():
+        pytest.fail(message)
+    pytest.skip(message)
+
+
+def _running_in_ci() -> bool:
+    return os.environ.get("CI", "").lower() in {"1", "true", "yes", "on"}
 
 
 def test_missing_dbt_manifest_fails_with_prepare_hint(
