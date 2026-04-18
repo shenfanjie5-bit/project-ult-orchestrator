@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Iterator
 
-from dagster import AssetExecutionContext, ResourceParam, asset
+from dagster import ResourceParam, asset
 from dagster_dbt import DbtCliResource, dbt_assets
 
 from orchestrator.checks.dbt_events import stream_dbt_events_with_gate_handling
@@ -48,7 +48,7 @@ def phase0_readiness_ping() -> str:
 
 @dbt_assets(manifest=_require_dbt_manifest(DBT_MANIFEST_PATH))
 def dbt_phase0_assets(
-    context: AssetExecutionContext,
+    context,
     dbt: DbtCliResource,
     gate_policy: ResourceParam[GatePolicyResource],
 ) -> Iterator[object]:
