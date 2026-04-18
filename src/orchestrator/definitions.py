@@ -30,6 +30,8 @@ from orchestrator.jobs.phase0 import (
     DBT_PROFILES_DIR,
     DBT_PROJECT_DIR,
     PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+    PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+    PHASE0_GRAPH_STATUS_ASSET_KEY,
     PHASE0_GROUP_NAME,
     PHASE0_READINESS_ASSET_KEY,
     dbt_phase0_assets,
@@ -204,10 +206,15 @@ def build_definitions(
             raise ValueError(f"duplicate resource key: {reserved}")
 
     provider_assets = _collect_provider_assets(module_factory_list)
+    provider_checks = _collect_provider_checks(module_factory_list)
     _validate_phase0_provider_assets(provider_assets)
     _validate_phase1_provider_assets(provider_assets)
     if _requires_milestone_surface():
-        _validate_milestone_surface(provider_assets, resource_bundle.resources)
+        _validate_milestone_surface(
+            provider_assets,
+            provider_checks,
+            resource_bundle.resources,
+        )
     if _requires_phase1_surface():
         _validate_phase1_surface(provider_assets)
     if _requires_phase2_surface():
@@ -220,7 +227,6 @@ def build_definitions(
         provider_assets,
         require_surface=_requires_audit_eval_surface(),
     )
-    provider_checks = _collect_provider_checks(module_factory_list)
     phase2_builtin_checks = _build_phase2_builtin_checks(
         provider_assets,
         resource_bundle.resources,
@@ -353,6 +359,7 @@ def _collect_provider_checks(
 
 def _validate_phase0_provider_assets(provider_assets: Iterable[object]) -> None:
     candidate_freeze_key = AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY])
+    graph_status_key = AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY])
     has_phase0_provider_asset = False
     has_candidate_freeze = False
 
@@ -363,6 +370,14 @@ def _validate_phase0_provider_assets(provider_assets: Iterable[object]) -> None:
             group_names.get(asset_key) == PHASE0_GROUP_NAME for asset_key in keys
         ):
             has_phase0_provider_asset = True
+
+        if graph_status_key in keys:
+            group_name = group_names.get(graph_status_key)
+            if group_name != PHASE0_GROUP_NAME:
+                raise ValueError(
+                    "graph_status asset must declare "
+                    f"group_name={PHASE0_GROUP_NAME!r}; got {group_name!r}",
+                )
 
         if candidate_freeze_key not in keys:
             continue
@@ -389,6 +404,7 @@ def _validate_phase1_provider_assets(provider_assets: Iterable[object]) -> None:
         {
             AssetKey([PHASE0_READINESS_ASSET_KEY]),
             AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+            AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
         },
     )
     required_asset_key_names = {
@@ -485,10 +501,12 @@ def _is_env_truthy(env_key: str) -> bool:
 
 def _validate_milestone_surface(
     provider_assets: Iterable[object],
+    provider_checks: Iterable[object],
     provider_resources: Mapping[str, object],
 ) -> None:
     missing: list[str] = []
     candidate_freeze_key = AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY])
+    graph_status_key = AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY])
     asset_keys = {
         asset_key
         for asset_def in provider_assets
@@ -496,6 +514,15 @@ def _validate_milestone_surface(
     }
     if candidate_freeze_key not in asset_keys:
         missing.append("candidate_freeze asset")
+    if graph_status_key not in asset_keys:
+        missing.append("graph_status asset")
+
+    if not _has_asset_check(
+        provider_checks,
+        asset_key=graph_status_key,
+        check_name=PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+    ):
+        missing.append("neo4j_graph_consistency_check AssetCheck")
 
     if not (
         DATA_READINESS_RESOURCE_KEY in provider_resources
@@ -515,6 +542,38 @@ def _validate_milestone_surface(
             "pass module_factories explicitly to build_definitions(). "
             f"Missing: {missing_items}.",
         )
+
+
+def _has_asset_check(
+    provider_checks: Iterable[object],
+    *,
+    asset_key: AssetKey,
+    check_name: str,
+) -> bool:
+    return any(
+        _asset_check_targets(check_def, asset_key=asset_key, check_name=check_name)
+        for check_def in provider_checks
+    )
+
+
+def _asset_check_targets(
+    check_def: object,
+    *,
+    asset_key: AssetKey,
+    check_name: str,
+) -> bool:
+    for attribute_name in ("check_keys", "specs"):
+        for check_spec in getattr(check_def, attribute_name, ()) or ():
+            if (
+                getattr(check_spec, "name", None) == check_name
+                and getattr(check_spec, "asset_key", None) == asset_key
+            ):
+                return True
+
+    return (
+        getattr(check_def, "name", None) == check_name
+        and getattr(check_def, "asset_key", None) == asset_key
+    )
 
 
 def _validate_phase1_surface(provider_assets: Iterable[object]) -> None:

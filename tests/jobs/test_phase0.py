@@ -43,6 +43,10 @@ def test_phase0_group_constants(phase0_module: Any) -> None:
     assert phase0_module.PHASE0_REQUIRED_ASSET_KEYS == (
         "phase0_readiness_ping",
         "candidate_freeze",
+        "graph_status",
+    )
+    assert phase0_module.PHASE0_GRAPH_CONSISTENCY_CHECK_NAME == (
+        "neo4j_graph_consistency_check"
     )
 
 

@@ -23,6 +23,7 @@ def test_daily_cycle_manifest_failure_hook_writes_repair_only_request(
     from orchestrator.jobs.cycle import daily_cycle_job
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_GRAPH_STATUS_ASSET_KEY,
         PHASE0_GROUP_NAME,
         PHASE0_READINESS_ASSET_KEY,
     )
@@ -54,12 +55,17 @@ def test_daily_cycle_manifest_failure_hook_writes_repair_only_request(
     def candidate_freeze() -> str:
         return "frozen"
 
+    @dagster.asset(name=PHASE0_GRAPH_STATUS_ASSET_KEY, group_name=PHASE0_GROUP_NAME)
+    def graph_status(candidate_freeze: str) -> str:
+        return f"{candidate_freeze}:ready"
+
     @dagster.asset(
         name=PHASE1_GRAPH_PROMOTION_ASSET_KEY,
         group_name=PHASE1_GROUP_NAME,
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
         ],
     )
     def graph_promotion() -> str:
@@ -98,6 +104,7 @@ def test_daily_cycle_manifest_failure_hook_writes_repair_only_request(
         assets=[
             phase0_readiness_ping,
             candidate_freeze,
+            graph_status,
             graph_promotion,
             graph_snapshot,
             phase2_l7,

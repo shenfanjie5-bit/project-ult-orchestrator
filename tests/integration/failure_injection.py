@@ -60,6 +60,10 @@ _PHASE3_CONSTANTS = _load_job_constants_module(
 PHASE0_CANDIDATE_FREEZE_ASSET_KEY = str(
     _PHASE0_CONSTANTS.PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
 )
+PHASE0_GRAPH_CONSISTENCY_CHECK_NAME = str(
+    _PHASE0_CONSTANTS.PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+)
+PHASE0_GRAPH_STATUS_ASSET_KEY = str(_PHASE0_CONSTANTS.PHASE0_GRAPH_STATUS_ASSET_KEY)
 PHASE0_GROUP_NAME = str(_PHASE0_CONSTANTS.PHASE0_GROUP_NAME)
 PHASE0_READINESS_ASSET_KEY = str(_PHASE0_CONSTANTS.PHASE0_READINESS_ASSET_KEY)
 PHASE1_GRAPH_PROMOTION_ASSET_KEY = str(
@@ -309,12 +313,27 @@ def fake_phase0_surface_provider(dagster: Any) -> object:
     def candidate_freeze() -> str:
         return "frozen"
 
+    @dagster.asset(
+        name=PHASE0_GRAPH_STATUS_ASSET_KEY,
+        group_name=PHASE0_GROUP_NAME,
+    )
+    def graph_status(candidate_freeze: str) -> str:
+        return f"{candidate_freeze}:ready"
+
+    @dagster.asset_check(
+        asset=graph_status,
+        name=PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+        blocking=True,
+    )
+    def neo4j_graph_consistency_check() -> object:
+        return dagster.AssetCheckResult(passed=True)
+
     class FakePhase0SurfaceProvider:
         def get_assets(self) -> tuple[object, ...]:
-            return (candidate_freeze,)
+            return (candidate_freeze, graph_status)
 
         def get_checks(self) -> tuple[object, ...]:
-            return ()
+            return (neo4j_graph_consistency_check,)
 
         def get_resources(self) -> dict[str, object]:
             return {
@@ -332,6 +351,7 @@ def fake_phase1_provider(dagster: Any) -> object:
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
         ],
     )
     def graph_promotion() -> str:
@@ -614,12 +634,17 @@ def _run_phase1_graph_snapshot_failure(
     def candidate_freeze() -> str:
         return "frozen"
 
+    @dagster.asset(name=PHASE0_GRAPH_STATUS_ASSET_KEY, group_name=PHASE0_GROUP_NAME)
+    def graph_status(candidate_freeze: str) -> str:
+        return f"{candidate_freeze}:ready"
+
     @dagster.asset(
         name=PHASE1_GRAPH_PROMOTION_ASSET_KEY,
         group_name=PHASE1_GROUP_NAME,
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
         ],
     )
     def graph_promotion() -> str:
@@ -640,6 +665,7 @@ def _run_phase1_graph_snapshot_failure(
         assets=[
             phase0_readiness_ping,
             candidate_freeze,
+            graph_status,
             graph_promotion,
             graph_snapshot,
             ready_graph_marker,
@@ -706,12 +732,17 @@ def _run_phase2_single_stock_failure(
     def candidate_freeze() -> str:
         return "frozen"
 
+    @dagster.asset(name=PHASE0_GRAPH_STATUS_ASSET_KEY, group_name=PHASE0_GROUP_NAME)
+    def graph_status(candidate_freeze: str) -> str:
+        return f"{candidate_freeze}:ready"
+
     @dagster.asset(
         name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
         group_name=PHASE1_GROUP_NAME,
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
         ],
     )
     def graph_snapshot() -> str:
@@ -766,6 +797,7 @@ def _run_phase2_single_stock_failure(
         assets=[
             phase0_readiness_ping,
             candidate_freeze,
+            graph_status,
             graph_snapshot,
             phase2_stock_aapl,
             phase2_stock_msft,
@@ -1132,7 +1164,7 @@ def _execute_daily_cycle(
         )
 
 
-def _phase0_direct_assets(dagster: Any) -> tuple[object, object]:
+def _phase0_direct_assets(dagster: Any) -> tuple[object, object, object]:
     @dagster.asset(name=PHASE0_READINESS_ASSET_KEY, group_name=PHASE0_GROUP_NAME)
     def phase0_readiness_ping() -> str:
         return "ready"
@@ -1144,7 +1176,11 @@ def _phase0_direct_assets(dagster: Any) -> tuple[object, object]:
     def candidate_freeze() -> str:
         return "frozen"
 
-    return phase0_readiness_ping, candidate_freeze
+    @dagster.asset(name=PHASE0_GRAPH_STATUS_ASSET_KEY, group_name=PHASE0_GROUP_NAME)
+    def graph_status(candidate_freeze: str) -> str:
+        return f"{candidate_freeze}:ready"
+
+    return phase0_readiness_ping, candidate_freeze, graph_status
 
 
 def _phase1_snapshot_direct_assets(dagster: Any) -> tuple[object, object]:
@@ -1154,6 +1190,7 @@ def _phase1_snapshot_direct_assets(dagster: Any) -> tuple[object, object]:
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
         ],
     )
     def graph_promotion() -> str:

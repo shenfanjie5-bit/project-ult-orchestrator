@@ -47,9 +47,9 @@ _INFRASTRUCTURE_RESOURCE_REGISTRY_ENTRIES = (
     InfrastructureResourceRegistryEntry("pg_engine", PhaseEnum.PHASE0),
     InfrastructureResourceRegistryEntry("dagster_instance_storage", PhaseEnum.PHASE0),
     InfrastructureResourceRegistryEntry("iceberg_catalog", PhaseEnum.PHASE0),
-    InfrastructureResourceRegistryEntry("neo4j", PhaseEnum.PHASE1),
-    InfrastructureResourceRegistryEntry("neo4j_driver", PhaseEnum.PHASE1),
-    InfrastructureResourceRegistryEntry("graph_backend", PhaseEnum.PHASE1),
+    InfrastructureResourceRegistryEntry("neo4j", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("neo4j_driver", PhaseEnum.PHASE0),
+    InfrastructureResourceRegistryEntry("graph_backend", PhaseEnum.PHASE0),
     InfrastructureResourceRegistryEntry("phase2_pool_failure_rate", PhaseEnum.PHASE2),
     InfrastructureResourceRegistryEntry(
         PROVIDER_RESOURCE_CONSTRUCTION_KEY,
@@ -67,6 +67,20 @@ INFRASTRUCTURE_RESOURCE_PHASES: Mapping[str, PhaseEnum] = MappingProxyType(
     {
         key: entry.phase
         for key, entry in INFRASTRUCTURE_RESOURCE_REGISTRY.items()
+    },
+)
+_GUARD_ALL_CALLABLE_RESOURCE_KEYS = frozenset(
+    {
+        "dbt",
+        "postgres",
+        "postgresql",
+        "postgres_engine",
+        "pg_engine",
+        "dagster_instance_storage",
+        "iceberg_catalog",
+        "neo4j",
+        "neo4j_driver",
+        "graph_backend",
     },
 )
 _GUARDED_METHODS_BY_RESOURCE_KEY: Mapping[str, frozenset[str]] = MappingProxyType(
@@ -265,10 +279,7 @@ class _GuardedInfrastructureValue:
                 exc=exc,
             )
 
-        if callable(attribute) and name in _GUARDED_METHODS_BY_RESOURCE_KEY.get(
-            self._resource_key,
-            frozenset(),
-        ):
+        if callable(attribute) and _should_guard_method_call(self._resource_key, name):
             return _guard_method_call(
                 resource_key=self._resource_key,
                 phase=self._phase,
@@ -278,6 +289,14 @@ class _GuardedInfrastructureValue:
             )
 
         return attribute
+
+
+def _should_guard_method_call(resource_key: str, method_name: str) -> bool:
+    return (
+        resource_key in _GUARD_ALL_CALLABLE_RESOURCE_KEYS
+        or method_name
+        in _GUARDED_METHODS_BY_RESOURCE_KEY.get(resource_key, frozenset())
+    )
 
 
 def _guard_method_call(
