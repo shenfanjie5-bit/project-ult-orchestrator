@@ -9,8 +9,8 @@ description = "Scaffold workspace for orchestrator."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "dagster",
-    "dagster-dbt",
+    "dagster>=1.5,<1.6",
+    "dagster-dbt>=0.21,<0.22",
     "pendulum>=3.2",
     "pydantic",
     "pyyaml",
