@@ -127,15 +127,24 @@ class _ReadinessResource:
         return self._signal
 
 
-class _UnhealthyLLMHealthResult:
-    healthy = False
-    summary = "provider unavailable"
+class _UnhealthyProviderHealthStatus:
     provider = "fake-llm"
+    model = "critical-model"
+    reachable = False
+    latency_ms = None
+    quota_status = "unavailable"
+    error = "provider unavailable"
+
+
+class _UnhealthyLLMHealthReport:
+    provider_statuses = (_UnhealthyProviderHealthStatus(),)
+    all_critical_targets_available = False
+    summary = "provider unavailable"
 
 
 class _UnhealthyLLMHealthProbe:
-    def check_health(self) -> _UnhealthyLLMHealthResult:
-        return _UnhealthyLLMHealthResult()
+    def check_health(self) -> _UnhealthyLLMHealthReport:
+        return _UnhealthyLLMHealthReport()
 
 
 def gate_matrix_failure_cases(
@@ -288,14 +297,22 @@ def fake_phase0_surface_provider(dagster: Any) -> object:
         def create_resource(self, context: object) -> FakeDataReadinessProvider:
             return FakeDataReadinessProvider()
 
-    class FakeLLMHealthResult:
-        healthy = True
-        summary = "provider ready"
+    class FakeProviderHealthStatus:
         provider = "fake-llm"
+        model = "critical-model"
+        reachable = True
+        latency_ms = 12.0
+        quota_status = "available"
+        error = None
+
+    class FakeLLMHealthReport:
+        provider_statuses = (FakeProviderHealthStatus(),)
+        all_critical_targets_available = True
+        summary = "provider ready"
 
     class FakeLLMHealthProbe:
-        def check_health(self) -> FakeLLMHealthResult:
-            return FakeLLMHealthResult()
+        def check_health(self) -> FakeLLMHealthReport:
+            return FakeLLMHealthReport()
 
     class FakeLLMHealthProbeResource(dagster.ConfigurableResource):
         def create_resource(self, context: object) -> FakeLLMHealthProbe:

@@ -35,15 +35,24 @@ class _GatePolicyResource:
         self.policy = policy
 
 
-class _LLMHealthResult:
-    healthy = False
-    summary = "provider unavailable"
+class _ProviderHealthStatus:
     provider = "fake-llm"
+    model = "critical-model"
+    reachable = False
+    latency_ms = None
+    quota_status = "unavailable"
+    error = "provider unavailable"
+
+
+class _LLMHealthReport:
+    provider_statuses = (_ProviderHealthStatus(),)
+    all_critical_targets_available = False
+    summary = "provider unavailable"
 
 
 class _LLMHealthProbe:
-    def check_health(self) -> _LLMHealthResult:
-        return _LLMHealthResult()
+    def check_health(self) -> _LLMHealthReport:
+        return _LLMHealthReport()
 
 
 def test_readiness_not_ready_fails_phase0_alerts_and_skips(

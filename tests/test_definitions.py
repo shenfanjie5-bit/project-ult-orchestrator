@@ -313,8 +313,9 @@ def test_build_definitions_keeps_llm_check_fail_closed_without_probe_resource(
     create_resource = getattr(probe_resource, "create_resource")
     probe = create_resource(None)
     health = probe.check_health()
-    assert health.healthy is False
-    assert health.provider == "missing"
+    assert health.all_critical_targets_available is False
+    assert health.provider_statuses[0].provider == "missing"
+    assert health.provider_statuses[0].model == "unknown"
     assert "not configured" in health.summary
 
 
@@ -423,14 +424,22 @@ def _fake_provider(dagster: Any) -> object:
         def create_resource(self, context: object) -> dict[str, str]:
             return {"status": "ok"}
 
-    class FakeLLMHealthResult:
-        healthy = True
-        summary = "provider ready"
+    class FakeProviderHealthStatus:
         provider = "fake-llm"
+        model = "fake-model"
+        reachable = True
+        latency_ms = 12.0
+        quota_status = "available"
+        error = None
+
+    class FakeLLMHealthReport:
+        provider_statuses = (FakeProviderHealthStatus(),)
+        all_critical_targets_available = True
+        summary = "provider ready"
 
     class FakeLLMHealthProbe:
-        def check_health(self) -> FakeLLMHealthResult:
-            return FakeLLMHealthResult()
+        def check_health(self) -> FakeLLMHealthReport:
+            return FakeLLMHealthReport()
 
     class FakeLLMHealthProbeResource(dagster.ConfigurableResource):
         def create_resource(self, context: object) -> FakeLLMHealthProbe:

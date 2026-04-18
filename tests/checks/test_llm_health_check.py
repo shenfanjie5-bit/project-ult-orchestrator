@@ -19,18 +19,28 @@ _DIRECT_PROVIDER_IO = re.compile(r"litellm|requests[.]|httpx|urlopen")
 
 
 @dataclass(frozen=True, slots=True)
-class _FakeHealthResult:
-    healthy: bool
+class _FakeProviderHealthStatus:
+    provider: str
+    model: str
+    reachable: bool = True
+    latency_ms: float | None = 20.0
+    quota_status: str = "available"
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _FakeHealthReport:
+    provider_statuses: tuple[_FakeProviderHealthStatus, ...]
+    all_critical_targets_available: bool
     summary: str
-    provider: str | None
 
 
 class _FakeHealthProbe:
-    def __init__(self, result: _FakeHealthResult) -> None:
-        self._result = result
+    def __init__(self, report: _FakeHealthReport) -> None:
+        self._report = report
 
-    def check_health(self) -> _FakeHealthResult:
-        return self._result
+    def check_health(self) -> _FakeHealthReport:
+        return self._report
 
 
 class _RaisingHealthProbe:
@@ -38,6 +48,20 @@ class _RaisingHealthProbe:
 
     def check_health(self) -> object:
         raise RuntimeError("probe timeout")
+
+
+class _StatusListHealthProbe:
+    def check_health(self) -> tuple[_FakeProviderHealthStatus, ...]:
+        return (
+            _FakeProviderHealthStatus(
+                provider="fake-llm",
+                model="fast-model",
+            ),
+            _FakeProviderHealthStatus(
+                provider="backup-llm",
+                model="deep-model",
+            ),
+        )
 
 
 @pytest.fixture
@@ -57,20 +81,112 @@ def test_llm_health_check_passes_when_probe_is_healthy(
         result = llm_health_check(
             gate_policy=gate_policy_resource,
             llm_health_probe=_FakeHealthProbe(
-                _FakeHealthResult(
-                    healthy=True,
-                    summary="provider ready",
-                    provider="fake-llm",
+                _FakeHealthReport(
+                    provider_statuses=(
+                        _FakeProviderHealthStatus(
+                            provider="fake-llm",
+                            model="fast-model",
+                            latency_ms=18.5,
+                        ),
+                        _FakeProviderHealthStatus(
+                            provider="backup-llm",
+                            model="deep-model",
+                            latency_ms=42.0,
+                        ),
+                    ),
+                    all_critical_targets_available=True,
+                    summary="2 provider/model targets ready",
                 ),
             ),
         )
 
     assert result.passed is True
-    assert result.metadata == {
-        "provider": "fake-llm",
-        "summary": "provider ready",
-    }
+    assert result.metadata["all_critical_targets_available"] == "true"
+    assert result.metadata["target_count"] == "2"
+    assert result.metadata["unavailable_target_count"] == "0"
+    assert result.metadata["providers"] == "backup-llm, fake-llm"
+    assert result.metadata["provider_models"] == (
+        "fake-llm/fast-model, backup-llm/deep-model"
+    )
+    provider_statuses = json.loads(result.metadata["provider_statuses"])
+    assert provider_statuses == [
+        {
+            "error": None,
+            "latency_ms": 18.5,
+            "model": "fast-model",
+            "provider": "fake-llm",
+            "quota_status": "available",
+            "reachable": True,
+        },
+        {
+            "error": None,
+            "latency_ms": 42.0,
+            "model": "deep-model",
+            "provider": "backup-llm",
+            "quota_status": "available",
+            "reachable": True,
+        },
+    ]
     assert caplog.records == []
+
+
+def test_llm_health_check_passes_when_only_noncritical_target_is_unavailable(
+    gate_policy_resource: object,
+) -> None:
+    pytest.importorskip("dagster", reason="dagster is not installed")
+
+    from orchestrator.checks.asset_checks import llm_health_check
+
+    result = llm_health_check(
+        gate_policy=gate_policy_resource,
+        llm_health_probe=_FakeHealthProbe(
+            _FakeHealthReport(
+                provider_statuses=(
+                    _FakeProviderHealthStatus(
+                        provider="critical-llm",
+                        model="critical-model",
+                    ),
+                    _FakeProviderHealthStatus(
+                        provider="optional-llm",
+                        model="optional-model",
+                        reachable=False,
+                        latency_ms=None,
+                        quota_status="unavailable",
+                        error="optional target unavailable",
+                    ),
+                ),
+                all_critical_targets_available=True,
+                summary="critical targets ready; optional target unavailable",
+            ),
+        ),
+    )
+
+    assert result.passed is True
+    assert result.metadata["all_critical_targets_available"] == "true"
+    assert result.metadata["unavailable_target_count"] == "1"
+    assert result.metadata["unavailable_provider_models"] == (
+        "optional-llm/optional-model"
+    )
+
+
+def test_llm_health_check_accepts_provider_status_list_contract(
+    gate_policy_resource: object,
+) -> None:
+    pytest.importorskip("dagster", reason="dagster is not installed")
+
+    from orchestrator.checks.asset_checks import llm_health_check
+
+    result = llm_health_check(
+        gate_policy=gate_policy_resource,
+        llm_health_probe=_StatusListHealthProbe(),
+    )
+
+    assert result.passed is True
+    assert result.metadata["summary"] == "2 provider/model target(s) available"
+    assert result.metadata["all_critical_targets_available"] == "true"
+    assert result.metadata["provider_models"] == (
+        "fake-llm/fast-model, backup-llm/deep-model"
+    )
 
 
 def test_llm_health_check_fails_phase0_infra_with_fail_run_action(
@@ -83,10 +199,23 @@ def test_llm_health_check_fails_phase0_infra_with_fail_run_action(
     result = llm_health_check(
         gate_policy=gate_policy_resource,
         llm_health_probe=_FakeHealthProbe(
-            _FakeHealthResult(
-                healthy=False,
-                summary="probe failed",
-                provider="fake-llm",
+            _FakeHealthReport(
+                provider_statuses=(
+                    _FakeProviderHealthStatus(
+                        provider="fake-llm",
+                        model="critical-model",
+                        reachable=False,
+                        latency_ms=None,
+                        quota_status="available",
+                        error="connection refused",
+                    ),
+                    _FakeProviderHealthStatus(
+                        provider="backup-llm",
+                        model="fallback-model",
+                    ),
+                ),
+                all_critical_targets_available=False,
+                summary="critical target fake-llm/critical-model unavailable",
             ),
         ),
     )
@@ -95,8 +224,16 @@ def test_llm_health_check_fails_phase0_infra_with_fail_run_action(
     assert result.metadata["failure_class"] == "infra"
     assert result.metadata["action"] == "fail_run"
     assert result.metadata["scenario_id"] == "phase0_llm_health_check_failed"
-    assert result.metadata["provider"] == "fake-llm"
-    assert result.metadata["summary"] == "probe failed"
+    assert result.metadata["providers"] == "backup-llm, fake-llm"
+    assert result.metadata["provider_models"] == (
+        "fake-llm/critical-model, backup-llm/fallback-model"
+    )
+    assert result.metadata["unavailable_provider_models"] == (
+        "fake-llm/critical-model"
+    )
+    assert result.metadata["summary"] == (
+        "critical target fake-llm/critical-model unavailable"
+    )
 
 
 def test_llm_health_check_dispatches_fail_run_alert(
@@ -111,10 +248,19 @@ def test_llm_health_check_dispatches_fail_run_alert(
         llm_health_check(
             gate_policy=gate_policy_resource,
             llm_health_probe=_FakeHealthProbe(
-                _FakeHealthResult(
-                    healthy=False,
-                    summary="probe failed",
-                    provider="fake-llm",
+                _FakeHealthReport(
+                    provider_statuses=(
+                        _FakeProviderHealthStatus(
+                            provider="fake-llm",
+                            model="critical-model",
+                            reachable=False,
+                            latency_ms=None,
+                            quota_status="quota_exceeded",
+                            error="quota exhausted",
+                        ),
+                    ),
+                    all_critical_targets_available=False,
+                    summary="critical target quota exhausted",
                 ),
             ),
         )
@@ -147,6 +293,7 @@ def test_llm_health_check_probe_exception_is_policy_classified(
 
     assert result.passed is False
     assert result.metadata["provider"] == "fake-llm"
+    assert result.metadata["provider_models"] == "fake-llm/unknown"
     assert result.metadata["summary"] == "llm health probe failed: probe timeout"
     assert result.metadata["failure_class"] == "infra"
     assert result.metadata["action"] == "fail_run"

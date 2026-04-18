@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -29,25 +30,37 @@ class DataReadinessSignal:
     failed_node: str = "data_readiness"
 
 
-class LLMHealthResult(Protocol):
-    """Health result shape exposed by reasoner-runtime providers."""
+class ProviderHealthStatus(Protocol):
+    """Provider/model health status exposed by reasoner-runtime providers."""
 
-    healthy: bool
+    provider: str
+    model: str
+    reachable: bool
+    latency_ms: float | int | None
+    quota_status: str
+    error: str | None
+
+
+class HealthCheckReport(Protocol):
+    """Provider/model health report exposed by reasoner-runtime providers."""
+
+    provider_statuses: Sequence[ProviderHealthStatus]
+    all_critical_targets_available: bool
     summary: str
-    provider: str | None
 
 
 class LLMHealthProbe(Protocol):
     """Minimal reasoner-runtime health probe consumed by the orchestrator."""
 
-    def check_health(self) -> LLMHealthResult:
-        """Return the current LLM provider health."""
+    def check_health(self) -> HealthCheckReport:
+        """Return the current provider/model health report."""
         ...
 
 
 __all__ = [
     "DataReadinessSignal",
     "GateDecision",
+    "HealthCheckReport",
     "LLMHealthProbe",
-    "LLMHealthResult",
+    "ProviderHealthStatus",
 ]

@@ -141,17 +141,26 @@ _AUDIT_EVAL_SURFACE_PROFILES = frozenset(
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
-class _MissingLLMHealthResult:
-    healthy = False
-    summary = "llm_health_probe resource is not configured"
+class _MissingProviderHealthStatus:
     provider = "missing"
+    model = "unknown"
+    reachable = False
+    latency_ms = None
+    quota_status = "unknown"
+    error = "llm_health_probe resource is not configured"
+
+
+class _MissingLLMHealthReport:
+    provider_statuses = (_MissingProviderHealthStatus(),)
+    all_critical_targets_available = False
+    summary = "llm_health_probe resource is not configured"
 
 
 class _MissingLLMHealthProbe:
     provider = "missing"
 
-    def check_health(self) -> _MissingLLMHealthResult:
-        return _MissingLLMHealthResult()
+    def check_health(self) -> _MissingLLMHealthReport:
+        return _MissingLLMHealthReport()
 
 
 class _FailClosedLLMHealthProbeResource(ConfigurableResource):
