@@ -1,6 +1,11 @@
-"""Phase 2 gate adapters."""
+"""Phase 2 gate adapters.
 
-from __future__ import annotations
+Note: do NOT add ``from __future__ import annotations`` to this module.
+Dagster 1.9's ``@asset_check`` decorator inspects the type annotations on the
+decorated function via runtime introspection. With future-annotations enabled,
+all annotations become strings, and Dagster's identity check (annotation is
+AssetCheckExecutionContext) fails. Keep annotations as real class references.
+"""
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
