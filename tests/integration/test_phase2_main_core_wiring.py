@@ -102,6 +102,8 @@ def _fake_phase0_surface_provider(dagster: Any) -> object:
     from orchestrator.checks import DataReadinessSignal
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+        PHASE0_GRAPH_STATUS_ASSET_KEY,
         PHASE0_GROUP_NAME,
     )
     from orchestrator.sensors.data_readiness import DATA_READINESS_RESOURCE_KEY
@@ -134,12 +136,24 @@ def _fake_phase0_surface_provider(dagster: Any) -> object:
     def candidate_freeze() -> str:
         return "frozen"
 
+    @dagster.asset(name=PHASE0_GRAPH_STATUS_ASSET_KEY, group_name=PHASE0_GROUP_NAME)
+    def graph_status(candidate_freeze: str) -> str:
+        return f"{candidate_freeze}:ready"
+
+    @dagster.asset_check(
+        asset=graph_status,
+        name=PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+        blocking=True,
+    )
+    def neo4j_graph_consistency_check() -> object:
+        return dagster.AssetCheckResult(passed=True)
+
     class FakePhase0SurfaceProvider:
         def get_assets(self) -> tuple[object, ...]:
-            return (candidate_freeze,)
+            return (candidate_freeze, graph_status)
 
         def get_checks(self) -> tuple[object, ...]:
-            return ()
+            return (neo4j_graph_consistency_check,)
 
         def get_resources(self) -> dict[str, object]:
             return {
@@ -156,6 +170,7 @@ def _fake_phase0_surface_provider(dagster: Any) -> object:
 def _fake_phase1_provider(dagster: Any) -> object:
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_GRAPH_STATUS_ASSET_KEY,
         PHASE0_READINESS_ASSET_KEY,
     )
     from orchestrator.jobs.phase1 import (
@@ -170,6 +185,7 @@ def _fake_phase1_provider(dagster: Any) -> object:
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
         ],
     )
     def graph_promotion() -> str:
@@ -313,4 +329,3 @@ def _check_name(evaluation: object) -> str | None:
     check_key = getattr(evaluation, "check_key", None)
     name = getattr(check_key, "name", None)
     return name if isinstance(name, str) else None
-

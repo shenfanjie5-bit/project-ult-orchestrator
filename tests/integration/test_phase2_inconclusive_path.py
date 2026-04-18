@@ -23,6 +23,7 @@ def test_phase2_single_stock_inconclusive_check_does_not_block_daily_cycle(
     from orchestrator.jobs.cycle import daily_cycle_job
     from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+        PHASE0_GRAPH_STATUS_ASSET_KEY,
         PHASE0_GROUP_NAME,
         PHASE0_READINESS_ASSET_KEY,
     )
@@ -41,12 +42,17 @@ def test_phase2_single_stock_inconclusive_check_does_not_block_daily_cycle(
     def candidate_freeze() -> str:
         return "frozen"
 
+    @dagster.asset(name=PHASE0_GRAPH_STATUS_ASSET_KEY, group_name=PHASE0_GROUP_NAME)
+    def graph_status(candidate_freeze: str) -> str:
+        return f"{candidate_freeze}:ready"
+
     @dagster.asset(
         name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
         group_name=PHASE1_GROUP_NAME,
         deps=[
             dagster.AssetKey([PHASE0_READINESS_ASSET_KEY]),
             dagster.AssetKey([PHASE0_CANDIDATE_FREEZE_ASSET_KEY]),
+            dagster.AssetKey([PHASE0_GRAPH_STATUS_ASSET_KEY]),
         ],
     )
     def graph_snapshot() -> str:
@@ -91,6 +97,7 @@ def test_phase2_single_stock_inconclusive_check_does_not_block_daily_cycle(
         assets=[
             phase0_readiness_ping,
             candidate_freeze,
+            graph_status,
             graph_snapshot,
             phase2_stock_aapl,
             phase2_stock_msft,

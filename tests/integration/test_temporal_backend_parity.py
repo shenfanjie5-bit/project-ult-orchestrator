@@ -283,9 +283,9 @@ def _snapshot_provider(
 
 
 def _phase0_success_result() -> object:
-    from orchestrator.jobs.phase0_constants import PHASE0_CANDIDATE_FREEZE_ASSET_KEY
+    from orchestrator.jobs.phase0_constants import PHASE0_GRAPH_STATUS_ASSET_KEY
 
-    asset_key = SimpleNamespace(path=(PHASE0_CANDIDATE_FREEZE_ASSET_KEY,))
+    asset_key = SimpleNamespace(path=(PHASE0_GRAPH_STATUS_ASSET_KEY,))
     materialization = SimpleNamespace(asset_key=asset_key, metadata={})
     event = SimpleNamespace(
         is_step_materialization=True,

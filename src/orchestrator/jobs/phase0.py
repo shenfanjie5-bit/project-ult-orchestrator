@@ -13,6 +13,8 @@ from orchestrator.checks.dbt_events import stream_dbt_events_with_gate_handling
 from orchestrator.checks.resources import GatePolicyResource
 from orchestrator.jobs.phase0_constants import (
     PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
+    PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
+    PHASE0_GRAPH_STATUS_ASSET_KEY,
     PHASE0_GROUP_NAME,
     PHASE0_READINESS_ASSET_KEY,
     PHASE0_REQUIRED_ASSET_KEYS,
@@ -72,6 +74,8 @@ __all__ = [
     "DBT_PROFILES_DIR",
     "DBT_PROJECT_DIR",
     "PHASE0_CANDIDATE_FREEZE_ASSET_KEY",
+    "PHASE0_GRAPH_CONSISTENCY_CHECK_NAME",
+    "PHASE0_GRAPH_STATUS_ASSET_KEY",
     "PHASE0_GROUP_NAME",
     "PHASE0_READINESS_ASSET_KEY",
     "PHASE0_REQUIRED_ASSET_KEYS",
