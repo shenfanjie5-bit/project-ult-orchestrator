@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 from pathlib import Path
@@ -77,6 +78,26 @@ def test_phase0_readiness_ping_key_is_addressable(
 
     assert phase0_readiness_ping.key == asset_key
     assert asset_key in phase0_readiness_ping.keys
+
+
+def test_dbt_phase0_assets_context_parameter_has_no_type_annotation() -> None:
+    source = (_REPO_ROOT / "src" / "orchestrator" / "jobs" / "phase0.py").read_text()
+    module = ast.parse(source)
+    function = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.FunctionDef) and node.name == "dbt_phase0_assets"
+    )
+
+    context_parameter = function.args.args[0]
+    assert context_parameter.arg == "context"
+    assert context_parameter.annotation is None
+
+
+def test_dbt_phase0_assets_imports_with_supported_dagster(
+    phase0_module: Any,
+) -> None:
+    assert phase0_module.dbt_phase0_assets is not None
 
 
 def test_missing_dbt_manifest_fails_with_prepare_hint(
