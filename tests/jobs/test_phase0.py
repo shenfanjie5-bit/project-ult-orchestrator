@@ -1,3 +1,4 @@
+import ast
 import os
 import sys
 from pathlib import Path
@@ -10,6 +11,7 @@ _DBT_PROJECT_DIR = Path(
     os.environ.get("ORCHESTRATOR_DBT_PROJECT_DIR", _REPO_ROOT / "dbt_stub")
 ).expanduser()
 _DBT_MANIFEST_PATH = _DBT_PROJECT_DIR / "target" / "manifest.json"
+_PHASE0_SOURCE_PATH = _REPO_ROOT / "src" / "orchestrator" / "jobs" / "phase0.py"
 
 
 @pytest.fixture
@@ -77,6 +79,19 @@ def test_phase0_readiness_ping_key_is_addressable(
 
     assert phase0_readiness_ping.key == asset_key
     assert asset_key in phase0_readiness_ping.keys
+
+
+def test_dbt_assets_context_parameter_is_unannotated() -> None:
+    tree = ast.parse(_PHASE0_SOURCE_PATH.read_text(encoding="utf-8"))
+    dbt_assets_function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "dbt_phase0_assets"
+    )
+    context_arg = dbt_assets_function.args.args[0]
+
+    assert context_arg.arg == "context"
+    assert context_arg.annotation is None
 
 
 def test_missing_dbt_manifest_fails_with_prepare_hint(
