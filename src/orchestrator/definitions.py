@@ -48,7 +48,7 @@ from orchestrator.jobs.phase3 import (
     PHASE3_GROUP_NAME,
     PHASE3_MANIFEST_ASSET_KEY,
 )
-from orchestrator.policy import load_gate_policy
+from orchestrator.policy import GatePolicyProfile, load_gate_policy
 from orchestrator.resources import (
     INFRASTRUCTURE_RESOURCE_PHASES,
     AssetFactoryProvider,
@@ -189,6 +189,27 @@ class _FailClosedDataReadinessResource(ConfigurableResource):
         return _MissingDataReadinessProvider()
 
 
+class _LoadedGatePolicyResource(GatePolicyResource):
+    """Gate policy resource bound to the assembly-time validated profile."""
+
+    def __init__(self, *, policy_path: str, policy: GatePolicyProfile) -> None:
+        super().__init__(policy_path=policy_path)
+        self._policy = policy
+
+    def setup_for_execution(self, context: object) -> None:
+        return None
+
+    @property
+    def policy(self) -> GatePolicyProfile:
+        if self._policy is None:
+            msg = (
+                "gate policy snapshot was not initialized during "
+                "Definitions assembly"
+            )
+            raise RuntimeError(msg)
+        return self._policy
+
+
 def build_definitions(
     module_factories: Iterable[AssetFactoryProvider] | None = None,
     policy_path: str | Path | None = None,
@@ -251,9 +272,13 @@ def build_definitions(
         _FailClosedLLMHealthProbeResource(),
     )
     data_readiness_resource = _data_readiness_resource(resource_bundle.resources)
+    gate_policy_resource = _LoadedGatePolicyResource(
+        policy_path=str(policy_path),
+        policy=policy,
+    )
     resources = _guard_infrastructure_resources(
         {
-            "gate_policy": GatePolicyResource(policy_path=str(policy_path)),
+            "gate_policy": gate_policy_resource,
             "dbt": DbtCliResource(
                 project_dir=str(DBT_PROJECT_DIR),
                 profiles_dir=str(DBT_PROFILES_DIR),
@@ -890,6 +915,8 @@ def _guard_infrastructure_resources(
     for resource_key, phase in INFRASTRUCTURE_RESOURCE_PHASES.items():
         resource = guarded_resources.get(resource_key)
         if resource is None:
+            continue
+        if resource_key == "gate_policy":
             continue
         guarded_resources[resource_key] = guard_infrastructure_resource(
             resource_key,

@@ -170,6 +170,37 @@ def test_build_definitions_temporal_backend_registers_phase0_entrypoint(
     assert defs.resources["resource_bundle"].config_ref == str(policy_path)
 
 
+def test_build_definitions_gate_policy_resource_uses_assembly_snapshot(
+    definitions_exports: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    build_definitions = definitions_exports["build_definitions"]
+    policy_path = _policy_with_backend(tmp_path, "dagster_plus_temporal")
+
+    defs = build_definitions(policy_path=policy_path)
+    gate_policy_resource = defs.resources["gate_policy"]
+    assembled_policy = gate_policy_resource.policy
+
+    assert assembled_policy.execution_backend == "dagster_plus_temporal"
+
+    policy_path.write_text(
+        policy_path.read_text(encoding="utf-8").replace(
+            "execution_backend: dagster_plus_temporal",
+            "execution_backend: dagster_only",
+        ),
+        encoding="utf-8",
+    )
+    gate_policy_resource.setup_for_execution(object())
+
+    assert gate_policy_resource.policy is assembled_policy
+    assert gate_policy_resource.policy.execution_backend == "dagster_plus_temporal"
+
+    policy_path.unlink()
+
+    assert gate_policy_resource.policy is assembled_policy
+    assert gate_policy_resource.policy.execution_backend == "dagster_plus_temporal"
+
+
 def test_build_definitions_backs_data_readiness_sensor_resources(
     definitions_exports: dict[str, Any],
 ) -> None:
