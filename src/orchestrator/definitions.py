@@ -48,7 +48,7 @@ from orchestrator.jobs.phase3 import (
     PHASE3_GROUP_NAME,
     PHASE3_MANIFEST_ASSET_KEY,
 )
-from orchestrator.policy import load_gate_policy
+from orchestrator.policy import GatePolicyProfile, load_gate_policy
 from orchestrator.resources import (
     INFRASTRUCTURE_RESOURCE_PHASES,
     AssetFactoryProvider,
@@ -189,6 +189,55 @@ class _FailClosedDataReadinessResource(ConfigurableResource):
         return _MissingDataReadinessProvider()
 
 
+# Module-level registry mapping policy_path -> assembly-time
+# GatePolicyProfile snapshot. Kept outside the Pydantic resource class
+# because Pydantic intercepts class-body attributes whose names start with
+# an underscore and turns them into ModelPrivateAttr descriptors, which
+# do not behave as ordinary mutable class attributes.
+_GATE_POLICY_ASSEMBLY_SNAPSHOTS: dict[str, GatePolicyProfile] = {}
+
+
+class _LoadedGatePolicyResource(GatePolicyResource):
+    """Gate policy resource bound to the assembly-time validated profile.
+
+    The Dagster Pythonic-config plumbing clones resources at runtime via
+    ``self.__class__(**public_field_values)`` (see
+    ``dagster._config.pythonic_config.resource.ConfigurableResourceFactory.
+    _with_updated_values``). That call only carries Pydantic public fields,
+    so we cannot pass an assembly-time ``GatePolicyProfile`` through a
+    custom ``__init__`` keyword. Instead, we register the validated
+    snapshot under the canonical policy path in
+    ``_GATE_POLICY_ASSEMBLY_SNAPSHOTS`` and look it up from there whenever
+    the resource (or one of its clones) is asked for ``.policy``.
+    ``setup_for_execution`` is overridden to a no-op so the on-disk policy
+    is never silently reloaded after assembly: if the file on disk diverges
+    from the registered snapshot, gate decisions still classify against the
+    snapshot validated by ``build_definitions``.
+    """
+
+    @staticmethod
+    def register_snapshot(
+        policy_path: str,
+        policy: GatePolicyProfile,
+    ) -> None:
+        _GATE_POLICY_ASSEMBLY_SNAPSHOTS[policy_path] = policy
+
+    def setup_for_execution(self, context: object) -> None:
+        return None
+
+    @property
+    def policy(self) -> GatePolicyProfile:
+        snapshot = _GATE_POLICY_ASSEMBLY_SNAPSHOTS.get(self.policy_path)
+        if snapshot is None:
+            msg = (
+                "gate policy snapshot for "
+                f"{self.policy_path!r} was not initialized during "
+                "Definitions assembly"
+            )
+            raise RuntimeError(msg)
+        return snapshot
+
+
 def build_definitions(
     module_factories: Iterable[AssetFactoryProvider] | None = None,
     policy_path: str | Path | None = None,
@@ -198,14 +247,9 @@ def build_definitions(
             "ORCHESTRATOR_POLICY_PATH",
             DEFAULT_POLICY_PATH,
         )
+    policy = load_gate_policy(policy_path)
+    execution_backend = policy.execution_backend
     module_factory_list = _resolve_module_factories(module_factories)
-    try:
-        policy = load_gate_policy(policy_path)
-    except FileNotFoundError:
-        policy = None
-        execution_backend = "dagster_only"
-    else:
-        execution_backend = policy.execution_backend
     phase_config = {"execution_backend": execution_backend}
     daily_cycle_jobs = build_daily_cycle_jobs(phase_config)
     automatic_cycle_job = daily_cycle_jobs[0]
@@ -213,12 +257,17 @@ def build_definitions(
     data_readiness_sensor = build_data_readiness_sensor(automatic_cycle_job)
     sensors: list[object] = [data_readiness_sensor, manual_rerun_sensor]
     if execution_backend == "dagster_plus_temporal":
-        if policy is None:
-            msg = "temporal backend requires a loadable gate policy"
-            raise RuntimeError(msg)
         sensors.append(build_temporal_handoff_sensor(policy=policy))
 
-    resource_bundle = build_resource_bundle(str(policy_path), module_factory_list)
+    policy_path_str = str(policy_path)
+    resource_bundle = build_resource_bundle(
+        {
+            "config_ref": policy_path_str,
+            "policy_path": policy_path_str,
+            "gate_policy": policy,
+        },
+        module_factory_list,
+    )
     for reserved in _RESERVED_RESOURCE_KEYS:
         if reserved in resource_bundle.resource_keys:
             raise ValueError(f"duplicate resource key: {reserved}")
@@ -259,9 +308,11 @@ def build_definitions(
         _FailClosedLLMHealthProbeResource(),
     )
     data_readiness_resource = _data_readiness_resource(resource_bundle.resources)
+    _LoadedGatePolicyResource.register_snapshot(policy_path_str, policy)
+    gate_policy_resource = _LoadedGatePolicyResource(policy_path=policy_path_str)
     resources = _guard_infrastructure_resources(
         {
-            "gate_policy": GatePolicyResource(policy_path=str(policy_path)),
+            "gate_policy": gate_policy_resource,
             "dbt": DbtCliResource(
                 project_dir=str(DBT_PROJECT_DIR),
                 profiles_dir=str(DBT_PROFILES_DIR),
@@ -271,7 +322,8 @@ def build_definitions(
             "resource_bundle": resource_bundle,
             **resource_bundle.resources,
         },
-        policy_path=str(policy_path),
+        policy_path=policy_path_str,
+        policy=policy,
     )
 
     return Definitions(
@@ -893,17 +945,21 @@ def _data_readiness_resource(resources: Mapping[str, object]) -> object:
 def _guard_infrastructure_resources(
     resources: Mapping[str, object],
     policy_path: str,
+    policy: GatePolicyProfile,
 ) -> dict[str, object]:
     guarded_resources = dict(resources)
     for resource_key, phase in INFRASTRUCTURE_RESOURCE_PHASES.items():
         resource = guarded_resources.get(resource_key)
         if resource is None:
             continue
+        if resource_key == "gate_policy":
+            continue
         guarded_resources[resource_key] = guard_infrastructure_resource(
             resource_key,
             resource,
             phase=phase,
             policy_path=policy_path,
+            policy=policy,
         )
     return guarded_resources
 

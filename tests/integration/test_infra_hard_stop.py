@@ -63,43 +63,31 @@ def test_daily_cycle_hard_stops_on_guarded_resource_init_failure(
     assert f"fake {failing_resource_key} unavailable" in str(payload["summary"])
 
 
-def test_daily_cycle_alerts_when_gate_policy_resource_load_fails(
+def test_build_definitions_fails_fast_when_gate_policy_path_missing(
     dagster_module: object,
-    dagster_instance: object,
     tmp_dbt_project: Path,
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Missing gate policy must raise loudly during Definitions assembly.
+
+    Per issue #111, the prior behavior (catch the FileNotFoundError, default
+    to dagster_only, register the resource and let it surface later) is a
+    silent backend swap that masks misconfiguration. The contract is now
+    fail-fast: build_definitions must validate the policy up front so the
+    backend selection, sensor wiring, and gate classification all derive
+    from the same validated profile.
+    """
     dagster = dagster_module
     missing_policy_path = tmp_path / "missing_gate_policy.yaml"
-    defs = _build_defs(
-        dagster,
-        monkeypatch=monkeypatch,
-        stub_policy_path=str(missing_policy_path),
-        failing_resource_key="none",
-    )
-    dagster.Definitions.validate_loadable(defs)
 
-    with caplog.at_level(logging.WARNING, logger="orchestrator.alerting.dispatcher"):
-        result = defs.get_job_def("daily_cycle_job").execute_in_process(
-            instance=dagster_instance,
-            raise_on_error=False,
-            tags={"cycle_id": "cycle-20260416"},
+    with pytest.raises(FileNotFoundError, match=missing_policy_path.name):
+        _build_defs(
+            dagster,
+            monkeypatch=monkeypatch,
+            stub_policy_path=str(missing_policy_path),
+            failing_resource_key="none",
         )
-
-    materialized_keys = asset_materialization_keys(result)
-    payload = _single_alert_for_resource(caplog.records, "gate_policy")
-
-    assert result.success is False
-    assert dagster.AssetKey(["graph_promotion"]) not in materialized_keys
-    assert payload["phase"] == "phase0"
-    assert payload["failure_class"] == "infra"
-    assert payload["action"] == "fail_run"
-    assert payload["scenario_id"] == "infra_unavailable_hard_stop"
-    assert payload["runbook_url"] == "docs/RUNBOOK_P5.md#phase2-infra-fail_run"
-    assert payload["failed_node"] == "gate_policy"
-    assert missing_policy_path.name in str(payload["summary"])
 
 
 def test_build_definitions_alerts_when_provider_get_resources_fails(

@@ -154,6 +154,84 @@ def test_guarded_graph_backend_method_failure_is_classified() -> None:
     )
 
 
+def test_guarded_method_failure_uses_supplied_policy_snapshot(
+    tmp_path: Path,
+) -> None:
+    infra = _infra_module()
+    policy_path = _write_policy(tmp_path, _load_lite_policy_data())
+    policy = load_gate_policy(policy_path)
+    mutated_policy_data = _load_lite_policy_data()
+    for entry in mutated_policy_data["phase_matrix"]:
+        if entry["scenario_id"] == infra.INFRA_UNAVAILABLE_HARD_STOP_SCENARIO_ID:
+            entry["action"] = "repair_manifest"
+            break
+    policy_path.write_text(
+        yaml.safe_dump(mutated_policy_data),
+        encoding="utf-8",
+    )
+
+    class LazyFailingProbe:
+        def check_health(self) -> object:
+            raise RuntimeError("probe timed out")
+
+    guarded = infra._GuardedInfrastructureValue(
+        resource_key="llm_health_probe",
+        value=LazyFailingProbe(),
+        phase=PhaseEnum.PHASE0,
+        policy_path=str(policy_path),
+        policy=policy,
+        context=object(),
+    )
+
+    with pytest.raises(infra.InfrastructureUnavailableError) as exc_info:
+        guarded.check_health()
+
+    assert exc_info.value.event.resource_key == "llm_health_probe"
+    assert exc_info.value.decision.action is GateAction.FAIL_RUN
+    assert exc_info.value.decision.reason == (
+        "Core storage or graph infrastructure is unavailable; hard stop."
+    )
+
+
+def test_provider_resource_construction_failure_uses_supplied_policy_snapshot(
+    tmp_path: Path,
+) -> None:
+    infra = _infra_module()
+    policy_path = _write_policy(tmp_path, _load_lite_policy_data())
+    policy = load_gate_policy(policy_path)
+    mutated_policy_data = _load_lite_policy_data()
+    for entry in mutated_policy_data["phase_matrix"]:
+        if entry["scenario_id"] == infra.INFRA_UNAVAILABLE_HARD_STOP_SCENARIO_ID:
+            entry["action"] = "repair_manifest"
+            break
+    policy_path.write_text(
+        yaml.safe_dump(mutated_policy_data),
+        encoding="utf-8",
+    )
+
+    class BrokenProvider:
+        infrastructure_resource_key = "neo4j_driver"
+
+        def get_resources(self) -> dict[str, object]:
+            raise RuntimeError("neo4j unavailable during bundle assembly")
+
+    with pytest.raises(infra.InfrastructureUnavailableError) as exc_info:
+        infra.guard_provider_resource_construction(
+            BrokenProvider(),
+            env_config={
+                "config_ref": str(policy_path),
+                "policy_path": str(policy_path),
+                "gate_policy": policy,
+            },
+        )
+
+    assert exc_info.value.event.resource_key == "neo4j_driver"
+    assert exc_info.value.decision.action is GateAction.FAIL_RUN
+    assert exc_info.value.decision.reason == (
+        "Core storage or graph infrastructure is unavailable; hard stop."
+    )
+
+
 @pytest.mark.parametrize(
     "surface_name",
     [
