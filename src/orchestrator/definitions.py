@@ -231,7 +231,15 @@ def build_definitions(
     if execution_backend == "dagster_plus_temporal":
         sensors.append(build_temporal_handoff_sensor(policy=policy))
 
-    resource_bundle = build_resource_bundle(str(policy_path), module_factory_list)
+    policy_path_str = str(policy_path)
+    resource_bundle = build_resource_bundle(
+        {
+            "config_ref": policy_path_str,
+            "policy_path": policy_path_str,
+            "gate_policy": policy,
+        },
+        module_factory_list,
+    )
     for reserved in _RESERVED_RESOURCE_KEYS:
         if reserved in resource_bundle.resource_keys:
             raise ValueError(f"duplicate resource key: {reserved}")
@@ -273,7 +281,7 @@ def build_definitions(
     )
     data_readiness_resource = _data_readiness_resource(resource_bundle.resources)
     gate_policy_resource = _LoadedGatePolicyResource(
-        policy_path=str(policy_path),
+        policy_path=policy_path_str,
         policy=policy,
     )
     resources = _guard_infrastructure_resources(
@@ -288,7 +296,8 @@ def build_definitions(
             "resource_bundle": resource_bundle,
             **resource_bundle.resources,
         },
-        policy_path=str(policy_path),
+        policy_path=policy_path_str,
+        policy=policy,
     )
 
     return Definitions(
@@ -910,6 +919,7 @@ def _data_readiness_resource(resources: Mapping[str, object]) -> object:
 def _guard_infrastructure_resources(
     resources: Mapping[str, object],
     policy_path: str,
+    policy: GatePolicyProfile,
 ) -> dict[str, object]:
     guarded_resources = dict(resources)
     for resource_key, phase in INFRASTRUCTURE_RESOURCE_PHASES.items():
@@ -923,6 +933,7 @@ def _guard_infrastructure_resources(
             resource,
             phase=phase,
             policy_path=policy_path,
+            policy=policy,
         )
     return guarded_resources
 

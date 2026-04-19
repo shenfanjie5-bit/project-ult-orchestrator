@@ -2,7 +2,7 @@ import importlib
 import sys
 from inspect import signature
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -199,6 +199,41 @@ def test_build_definitions_gate_policy_resource_uses_assembly_snapshot(
 
     assert gate_policy_resource.policy is assembled_policy
     assert gate_policy_resource.policy.execution_backend == "dagster_plus_temporal"
+
+
+def test_build_definitions_guarded_resources_use_assembly_policy_snapshot(
+    definitions_exports: dict[str, Any],
+    tmp_path: Path,
+) -> None:
+    from orchestrator.resources import InfrastructureUnavailableError
+
+    build_definitions = definitions_exports["build_definitions"]
+    dagster = definitions_exports["dagster"]
+    policy_path = _policy_with_backend(tmp_path, "dagster_only")
+
+    defs = build_definitions(
+        module_factories=[
+            _fake_provider(dagster, fail_llm_health_probe=True),
+        ],
+        policy_path=policy_path,
+    )
+
+    _rewrite_infra_hard_stop_action(policy_path, "repair_manifest")
+    resource_iter = defs.resources["llm_health_probe"].resource_fn(
+        SimpleNamespace(run_id="policy-snapshot-regression"),
+    )
+    guarded_probe = next(resource_iter)
+    try:
+        with pytest.raises(InfrastructureUnavailableError) as exc_info:
+            guarded_probe.check_health()
+    finally:
+        resource_iter.close()
+
+    assert exc_info.value.event.resource_key == "llm_health_probe"
+    assert exc_info.value.decision.action.value == "fail_run"
+    assert exc_info.value.decision.reason == (
+        "Core storage or graph infrastructure is unavailable; hard stop."
+    )
 
 
 def test_build_definitions_backs_data_readiness_sensor_resources(
@@ -531,6 +566,7 @@ def _fake_provider(
     *,
     include_graph_gate: bool = True,
     include_graph_consistency_check: bool = True,
+    fail_llm_health_probe: bool = False,
 ) -> object:
     class FakeDataPlatformResource(dagster.ConfigurableResource):
         def create_resource(self, context: object) -> dict[str, str]:
@@ -551,6 +587,8 @@ def _fake_provider(
 
     class FakeLLMHealthProbe:
         def check_health(self) -> FakeLLMHealthReport:
+            if fail_llm_health_probe:
+                raise RuntimeError("fake llm health probe unavailable")
             return FakeLLMHealthReport()
 
     class FakeLLMHealthProbeResource(dagster.ConfigurableResource):
@@ -722,6 +760,23 @@ def _policy_with_backend(tmp_path: Path, backend: str) -> Path:
         encoding="utf-8",
     )
     return policy_path
+
+
+def _rewrite_infra_hard_stop_action(policy_path: Path, action: str) -> None:
+    original = (
+        "  - scenario_id: infra_unavailable_hard_stop\n"
+        "    phase: phase2\n"
+        "    failure_class: infra\n"
+        "    action: fail_run\n"
+    )
+    replacement = original.replace("action: fail_run", f"action: {action}")
+    policy_text = policy_path.read_text(encoding="utf-8")
+    if original not in policy_text:
+        raise AssertionError("infra_unavailable_hard_stop action block not found")
+    policy_path.write_text(
+        policy_text.replace(original, replacement),
+        encoding="utf-8",
+    )
 
 
 def _clear_definition_imports() -> None:

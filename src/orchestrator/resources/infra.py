@@ -169,6 +169,7 @@ def guard_infrastructure_resource(
     *,
     phase: PhaseEnum,
     policy_path: str,
+    policy: GatePolicyProfile | None = None,
 ) -> object:
     """Return a Dagster resource that alerts and fails on infra unavailability."""
 
@@ -190,6 +191,7 @@ def guard_infrastructure_resource(
                 resource_key=resource_key,
                 phase=phase,
                 policy_path=policy_path,
+                policy=policy,
                 context=context,
                 exc=exc,
             )
@@ -200,6 +202,7 @@ def guard_infrastructure_resource(
                 value=value,
                 phase=phase,
                 policy_path=policy_path,
+                policy=policy,
                 context=context,
             )
         finally:
@@ -238,6 +241,7 @@ def guard_provider_resource_construction(
             resource_key=resource_key,
             phase=_phase_for_resource_key(resource_key),
             policy_path=_policy_path_from_env_config(env_config),
+            policy=_policy_from_env_config(env_config),
             context=_BundleAssemblyContext(module_factory),
             exc=exc,
         )
@@ -246,7 +250,14 @@ def guard_provider_resource_construction(
 
 
 class _GuardedInfrastructureValue:
-    __slots__ = ("_context", "_phase", "_policy_path", "_resource_key", "_value")
+    __slots__ = (
+        "_context",
+        "_phase",
+        "_policy",
+        "_policy_path",
+        "_resource_key",
+        "_value",
+    )
 
     def __init__(
         self,
@@ -255,12 +266,14 @@ class _GuardedInfrastructureValue:
         value: object,
         phase: PhaseEnum,
         policy_path: str,
+        policy: GatePolicyProfile | None = None,
         context: object,
     ) -> None:
         self._resource_key = resource_key
         self._value = value
         self._phase = phase
         self._policy_path = policy_path
+        self._policy = policy
         self._context = context
 
     def __getattr__(self, name: str) -> object:
@@ -275,6 +288,7 @@ class _GuardedInfrastructureValue:
                 resource_key=self._resource_key,
                 phase=self._phase,
                 policy_path=self._policy_path,
+                policy=self._policy,
                 context=self._context,
                 exc=exc,
             )
@@ -284,6 +298,7 @@ class _GuardedInfrastructureValue:
                 resource_key=self._resource_key,
                 phase=self._phase,
                 policy_path=self._policy_path,
+                policy=self._policy,
                 context=self._context,
                 method=attribute,
             )
@@ -304,6 +319,7 @@ def _guard_method_call(
     resource_key: str,
     phase: PhaseEnum,
     policy_path: str,
+    policy: GatePolicyProfile | None,
     context: object,
     method: Callable[..., object],
 ) -> Callable[..., object]:
@@ -317,6 +333,7 @@ def _guard_method_call(
                 resource_key=resource_key,
                 phase=phase,
                 policy_path=policy_path,
+                policy=policy,
                 context=context,
                 exc=exc,
             )
@@ -402,6 +419,7 @@ def _raise_infrastructure_unavailable(
     resource_key: str,
     phase: PhaseEnum,
     policy_path: str,
+    policy: GatePolicyProfile | None = None,
     context: object,
     exc: BaseException,
 ) -> NoReturn:
@@ -410,11 +428,15 @@ def _raise_infrastructure_unavailable(
         phase=phase,
         reason=_exception_summary(exc),
     )
-    try:
-        policy = load_gate_policy(policy_path)
-    except Exception:
-        decision = _fallback_infrastructure_decision(phase)
-        channels = _FALLBACK_ALERT_CHANNELS
+    if policy is None:
+        try:
+            policy = load_gate_policy(policy_path)
+        except Exception:
+            decision = _fallback_infrastructure_decision(phase)
+            channels = _FALLBACK_ALERT_CHANNELS
+        else:
+            decision = classify_infrastructure_failure(phase, event, policy)
+            channels = policy.alert_channels
     else:
         decision = classify_infrastructure_failure(phase, event, policy)
         channels = policy.alert_channels
@@ -475,6 +497,18 @@ def _policy_path_from_env_config(env_config: Mapping[str, Any] | str | None) -> 
             if isinstance(value, str) and value.strip():
                 return value.strip()
     return ""
+
+
+def _policy_from_env_config(
+    env_config: Mapping[str, Any] | str | None,
+) -> GatePolicyProfile | None:
+    if not isinstance(env_config, Mapping):
+        return None
+    for key in ("gate_policy", "policy"):
+        value = env_config.get(key)
+        if isinstance(value, GatePolicyProfile):
+            return value
+    return None
 
 
 def _fallback_infrastructure_decision(phase: PhaseEnum) -> GateDecision:
