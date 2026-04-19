@@ -102,6 +102,53 @@ def evaluate_temporal_handoff_sensor(
     )
 
 
+def evaluate_temporal_handoff_sensor_tick(
+    context: Any,
+    *,
+    policy: GatePolicyProfile | None,
+    phase0_job_name: str,
+    failover_job_name: str,
+    failover_mode: TemporalFailoverMode = "failed_over",
+) -> RunRequest | SkipReason:
+    """Evaluate the Temporal handoff sensor wrapper for one Dagster sensor tick."""
+
+    cursor = _parse_handoff_cursor(getattr(context, "cursor", None))
+    candidate = _latest_successful_phase0_run(context, phase0_job_name, cursor)
+    if candidate is None:
+        return SkipReason(
+            f"no successful {phase0_job_name} run is ready for Temporal handoff",
+        )
+
+    phase0_run = candidate.run
+    phase0_run_id = _run_id(phase0_run)
+    run_tags = _string_tags(_run_tags(phase0_run))
+    cycle_id = _cycle_id_from_run(phase0_run, run_tags)
+    result = evaluate_temporal_handoff_sensor(
+        policy=policy or _gate_policy_from_context(context),
+        phase0_run_id=phase0_run_id,
+        dagster_run_id=phase0_run_id,
+        cycle_id=cycle_id,
+        tags=_temporal_handoff_tags(
+            run_tags,
+            cycle_id=cycle_id,
+            phase0_run_id=phase0_run_id,
+        ),
+        client=_handoff_client_from_context(context),
+        failover_mode=failover_mode,
+        failover_job_name=failover_job_name,
+    )
+    if _handoff_result_consumed_phase0_run(result):
+        update_cursor = getattr(context, "update_cursor")
+        update_cursor(
+            _advance_handoff_cursor(
+                cursor,
+                raw_run=candidate.raw_run,
+                run=phase0_run,
+            )
+        )
+    return result
+
+
 def build_temporal_handoff_sensor(
     *,
     policy: GatePolicyProfile | None = None,
@@ -123,40 +170,13 @@ def build_temporal_handoff_sensor(
     def _temporal_handoff_sensor(
         context: SensorEvaluationContext,
     ) -> RunRequest | SkipReason:
-        cursor = _parse_handoff_cursor(context.cursor)
-        candidate = _latest_successful_phase0_run(context, phase0_job_name, cursor)
-        if candidate is None:
-            return SkipReason(
-                f"no successful {phase0_job_name} run is ready for Temporal handoff",
-            )
-
-        phase0_run = candidate.run
-        phase0_run_id = _run_id(phase0_run)
-        run_tags = _string_tags(_run_tags(phase0_run))
-        cycle_id = _cycle_id_from_run(phase0_run, run_tags)
-        result = evaluate_temporal_handoff_sensor(
-            policy=policy or _gate_policy_from_context(context),
-            phase0_run_id=phase0_run_id,
-            dagster_run_id=phase0_run_id,
-            cycle_id=cycle_id,
-            tags=_temporal_handoff_tags(
-                run_tags,
-                cycle_id=cycle_id,
-                phase0_run_id=phase0_run_id,
-            ),
-            client=_handoff_client_from_context(context),
-            failover_mode=failover_mode,
+        return evaluate_temporal_handoff_sensor_tick(
+            context,
+            policy=policy,
+            phase0_job_name=phase0_job_name,
             failover_job_name=failover_job_name,
+            failover_mode=failover_mode,
         )
-        if _handoff_result_consumed_phase0_run(result):
-            context.update_cursor(
-                _advance_handoff_cursor(
-                    cursor,
-                    raw_run=candidate.raw_run,
-                    run=phase0_run,
-                )
-            )
-        return result
 
     return _temporal_handoff_sensor
 
@@ -565,5 +585,6 @@ __all__ = [
     "TEMPORAL_HANDOFF_SENSOR_REQUIRED_RESOURCE_KEYS",
     "build_temporal_handoff_sensor",
     "evaluate_temporal_handoff_sensor",
+    "evaluate_temporal_handoff_sensor_tick",
     "temporal_handoff_sensor",
 ]

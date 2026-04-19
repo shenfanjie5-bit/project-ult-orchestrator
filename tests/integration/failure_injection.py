@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import logging
 import shutil
@@ -19,6 +17,12 @@ from orchestrator.policy import (
     PhaseEnum,
     load_gate_policy,
 )
+# Import GatePolicyResource at module level so Dagster 1.9 can resolve the
+# `gate_policy: GatePolicyResource` annotation on @asset_check-decorated
+# functions defined in nested helper functions. Without this, the function-local
+# imports do not appear in the inner function's __globals__ (which is this
+# module's globals), and Dagster's get_type_hints resolution fails.
+from orchestrator.checks.resources import GatePolicyResource
 from tests.integration.conftest import (
     _clear_phase0_imports,
     asset_check_evaluations,
@@ -462,7 +466,7 @@ def _run_phase0_readiness_failure(
 ) -> FailureInjectionOutcome:
     from orchestrator.checks import DataReadinessSignal
     from orchestrator.checks.classifier import classify_gate_result
-    from orchestrator.sensors.data_readiness import data_readiness_sensor
+    from orchestrator.sensors.data_readiness import evaluate_data_readiness_sensor
 
     policy = load_gate_policy(stub_policy_path)
     signal = DataReadinessSignal(
@@ -484,7 +488,7 @@ def _run_phase0_readiness_failure(
     )
 
     with caplog.at_level(logging.WARNING, logger="orchestrator.alerting.dispatcher"):
-        sensor_result = data_readiness_sensor.evaluation_fn(context)
+        sensor_result = evaluate_data_readiness_sensor(context)
 
     return FailureInjectionOutcome(
         action=decision.action.value,
@@ -787,7 +791,7 @@ def _run_phase2_single_stock_failure(
         blocking=False,
     )
     def phase2_aapl_single_stock_gate(
-        context: object,
+        context,
         gate_policy: GatePolicyResource,
     ) -> object:
         event = Phase2SingleStockFailureEvent(
@@ -958,7 +962,7 @@ def _run_phase3_formal_commit_failure(
         blocking=True,
     )
     def phase3_formal_commit_gate(
-        context: object,
+        context,
         gate_policy: GatePolicyResource,
     ) -> object:
         event = FormalCommitFailureEvent(

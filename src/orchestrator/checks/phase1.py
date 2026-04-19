@@ -151,10 +151,13 @@ def _cycle_id_from_hook_context(context: object) -> str:
 
 
 def _hook_context_tags(context: object) -> Mapping[str, Any]:
+    step_context = getattr(context, "_step_execution_context", None)
     for container in (
         context,
+        step_context,
         getattr(context, "run", None),
         getattr(context, "dagster_run", None),
+        getattr(step_context, "dagster_run", None),
     ):
         if container is None:
             continue

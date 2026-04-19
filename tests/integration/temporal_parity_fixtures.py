@@ -13,6 +13,13 @@ import yaml
 
 from orchestrator.alerting import runbook_url_for
 from orchestrator.checks.models import DataReadinessSignal, GateDecision
+# Import GatePolicyResource at module level so Dagster 1.9 can resolve the
+# `gate_policy: GatePolicyResource` annotation on @asset_check-decorated
+# functions defined inside class methods. Without this, the function-local
+# import (in _build_checks) is not in the function's __globals__, and
+# Dagster's type-hint resolution fails with `Failed to resolve type
+# annotation "GatePolicyResource"`.
+from orchestrator.checks.resources import GatePolicyResource
 from orchestrator.jobs.audit import AUDIT_EVAL_GROUP_NAME, RETROSPECTIVE_HOOK_ASSET_KEY
 from orchestrator.jobs.phase0_constants import (
     PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
@@ -379,7 +386,7 @@ class TemporalParityFakeProvider:
             group_name=PHASE3_GROUP_NAME,
         )
         def cycle_publish_manifest(
-            context: object,
+            context,
             formal_objects_commit: str,
         ) -> str:
             owner._mark_phase(PhaseEnum.PHASE3)
@@ -415,8 +422,6 @@ class TemporalParityFakeProvider:
         )
 
     def _build_checks(self) -> tuple[object, ...]:
-        from orchestrator.checks.resources import GatePolicyResource
-
         dagster = self._dagster
         assets = {next(iter(asset.keys)).path[-1]: asset for asset in self._assets}
         candidate_freeze = assets[PHASE0_CANDIDATE_FREEZE_ASSET_KEY]
@@ -442,7 +447,7 @@ class TemporalParityFakeProvider:
             blocking=True,
         )
         def phase0_dbt_partial_rerun_gate(
-            context: object,
+            context,
             gate_policy: GatePolicyResource,
         ) -> object:
             if not owner._is_case("phase0_dbt_test_failed"):
@@ -481,7 +486,7 @@ class TemporalParityFakeProvider:
             blocking=True,
         )
         def phase0_infra_hard_stop_gate(
-            context: object,
+            context,
             gate_policy: GatePolicyResource,
         ) -> object:
             return owner._hard_stop_check_result(
@@ -497,7 +502,7 @@ class TemporalParityFakeProvider:
             blocking=True,
         )
         def phase1_infra_hard_stop_gate(
-            context: object,
+            context,
             gate_policy: GatePolicyResource,
         ) -> object:
             return owner._hard_stop_check_result(
@@ -513,7 +518,7 @@ class TemporalParityFakeProvider:
             blocking=False,
         )
         def phase2_single_stock_gate(
-            context: object,
+            context,
             gate_policy: GatePolicyResource,
         ) -> object:
             if not owner._is_case("phase2_single_stock_task_failed"):
@@ -542,7 +547,7 @@ class TemporalParityFakeProvider:
             blocking=True,
         )
         def phase2_infra_hard_stop_gate(
-            context: object,
+            context,
             gate_policy: GatePolicyResource,
         ) -> object:
             return owner._hard_stop_check_result(
@@ -558,7 +563,7 @@ class TemporalParityFakeProvider:
             blocking=True,
         )
         def phase3_formal_commit_gate(
-            context: object,
+            context,
             gate_policy: GatePolicyResource,
         ) -> object:
             if not owner._is_case("phase3_formal_commit_failed"):
@@ -585,7 +590,7 @@ class TemporalParityFakeProvider:
             blocking=True,
         )
         def phase3_infra_hard_stop_gate(
-            context: object,
+            context,
             gate_policy: GatePolicyResource,
         ) -> object:
             return owner._hard_stop_check_result(
@@ -1820,25 +1825,41 @@ def _parity_provider(
 
 
 def _cycle_id_from_context(context: object, fallback: str) -> str:
-    dagster_run = getattr(context, "dagster_run", None)
-    if dagster_run is None:
-        dagster_run = getattr(context, "run", None)
-    tags = getattr(dagster_run, "tags", {}) or {}
-    if isinstance(tags, Mapping):
-        cycle_id = tags.get("cycle_id")
-        if isinstance(cycle_id, str) and cycle_id:
-            return cycle_id
+    step_context = getattr(context, "_step_execution_context", None)
+    for container in (
+        context,
+        getattr(context, "op_execution_context", None),
+        step_context,
+        getattr(context, "dagster_run", None),
+        getattr(context, "run", None),
+        getattr(step_context, "dagster_run", None),
+    ):
+        if container is None:
+            continue
+        for attribute_name in ("run_tags", "tags"):
+            tags = getattr(container, attribute_name, None)
+            if isinstance(tags, Mapping):
+                cycle_id = tags.get("cycle_id")
+                if isinstance(cycle_id, str) and cycle_id:
+                    return cycle_id
     return fallback
 
 
 def _run_id_from_context(context: object) -> str:
-    run_id = getattr(context, "run_id", None)
-    if isinstance(run_id, str) and run_id:
-        return run_id
-    dagster_run = getattr(context, "dagster_run", None)
-    run_id = getattr(dagster_run, "run_id", None)
-    if isinstance(run_id, str) and run_id:
-        return run_id
+    step_context = getattr(context, "_step_execution_context", None)
+    for container in (
+        context,
+        getattr(context, "op_execution_context", None),
+        step_context,
+        getattr(context, "dagster_run", None),
+        getattr(context, "run", None),
+        getattr(step_context, "dagster_run", None),
+    ):
+        if container is None:
+            continue
+        run_id = getattr(container, "run_id", None)
+        if isinstance(run_id, str) and run_id:
+            return run_id
     raise RuntimeError("Dagster context did not expose run_id")
 
 
