@@ -189,25 +189,53 @@ class _FailClosedDataReadinessResource(ConfigurableResource):
         return _MissingDataReadinessProvider()
 
 
-class _LoadedGatePolicyResource(GatePolicyResource):
-    """Gate policy resource bound to the assembly-time validated profile."""
+# Module-level registry mapping policy_path -> assembly-time
+# GatePolicyProfile snapshot. Kept outside the Pydantic resource class
+# because Pydantic intercepts class-body attributes whose names start with
+# an underscore and turns them into ModelPrivateAttr descriptors, which
+# do not behave as ordinary mutable class attributes.
+_GATE_POLICY_ASSEMBLY_SNAPSHOTS: dict[str, GatePolicyProfile] = {}
 
-    def __init__(self, *, policy_path: str, policy: GatePolicyProfile) -> None:
-        super().__init__(policy_path=policy_path)
-        self._policy = policy
+
+class _LoadedGatePolicyResource(GatePolicyResource):
+    """Gate policy resource bound to the assembly-time validated profile.
+
+    The Dagster Pythonic-config plumbing clones resources at runtime via
+    ``self.__class__(**public_field_values)`` (see
+    ``dagster._config.pythonic_config.resource.ConfigurableResourceFactory.
+    _with_updated_values``). That call only carries Pydantic public fields,
+    so we cannot pass an assembly-time ``GatePolicyProfile`` through a
+    custom ``__init__`` keyword. Instead, we register the validated
+    snapshot under the canonical policy path in
+    ``_GATE_POLICY_ASSEMBLY_SNAPSHOTS`` and look it up from there whenever
+    the resource (or one of its clones) is asked for ``.policy``.
+    ``setup_for_execution`` is overridden to a no-op so the on-disk policy
+    is never silently reloaded after assembly: if the file on disk diverges
+    from the registered snapshot, gate decisions still classify against the
+    snapshot validated by ``build_definitions``.
+    """
+
+    @staticmethod
+    def register_snapshot(
+        policy_path: str,
+        policy: GatePolicyProfile,
+    ) -> None:
+        _GATE_POLICY_ASSEMBLY_SNAPSHOTS[policy_path] = policy
 
     def setup_for_execution(self, context: object) -> None:
         return None
 
     @property
     def policy(self) -> GatePolicyProfile:
-        if self._policy is None:
+        snapshot = _GATE_POLICY_ASSEMBLY_SNAPSHOTS.get(self.policy_path)
+        if snapshot is None:
             msg = (
-                "gate policy snapshot was not initialized during "
+                "gate policy snapshot for "
+                f"{self.policy_path!r} was not initialized during "
                 "Definitions assembly"
             )
             raise RuntimeError(msg)
-        return self._policy
+        return snapshot
 
 
 def build_definitions(
@@ -280,10 +308,8 @@ def build_definitions(
         _FailClosedLLMHealthProbeResource(),
     )
     data_readiness_resource = _data_readiness_resource(resource_bundle.resources)
-    gate_policy_resource = _LoadedGatePolicyResource(
-        policy_path=policy_path_str,
-        policy=policy,
-    )
+    _LoadedGatePolicyResource.register_snapshot(policy_path_str, policy)
+    gate_policy_resource = _LoadedGatePolicyResource(policy_path=policy_path_str)
     resources = _guard_infrastructure_resources(
         {
             "gate_policy": gate_policy_resource,
