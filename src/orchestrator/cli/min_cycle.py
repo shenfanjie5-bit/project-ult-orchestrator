@@ -9,26 +9,33 @@ and the response schema is
 
 What this does (Lite mode):
     1. Read the fixture manifest at ``--fixture`` (YAML; minimal_cycle schema).
-    2. Walk through the manifest's ``expected_phases`` list as a placeholder
-       — no Dagster jobs are launched in the current implementation. The
-       intent is that the *contract* of "orchestrator can resolve a
-       minimal-cycle plan and emit a report" is exercised end-to-end before
-       full Phase 0/1/2/3 wiring lands.
+    2. Run real Phase 0-3 *assembly* via
+       ``orchestrator.jobs.cycle.build_daily_cycle_jobs(None)`` — this
+       imports the Dagster Job typed instances and records their names
+       into each artifact's payload (``assembled_job_names``). It does
+       NOT call ``materialize`` (that would touch real Iceberg/PG infra,
+       belongs to a future stage with full DB wiring); it asserts the
+       Dagster-side editor-time assembly succeeds. The honest
+       ``real_phase_execution`` boolean reflects whether assembly
+       actually returned a non-empty job tuple — never asserted
+       unconditionally.
     3. Write the report JSON to ``--report`` matching ``OrchestratorCycleReport``.
     4. Return exit code 0 on success, non-zero with a structured failure
-       report on argv/manifest validation errors.
+       report on argv/manifest validation errors. (Assembly probe
+       failures still write a structured artifact recording
+       ``assembly_error`` — caller decides whether that is a hard
+       failure for assembly e2e.)
 
-Why a placeholder execution path:
-    - assembly e2e is the integration gate; orchestrator's real Phase 0-3
-      execution belongs to the orchestrator stage 2 milestone, not this
-      single issue.
-    - Returning a structurally valid report unblocks assembly e2e wiring
-      first; richer phase execution can be filled in later without changing
-      the argv/report contracts.
+Why assembly-only (no materialize):
+    - assembly e2e is the integration gate; full Phase 0-3 *execution*
+      requires PG + Iceberg + LLM wiring that belongs to a later stage.
+    - assembly probe + structured-report contract is what assembly e2e
+      depends on; richer execution can fill in later without changing
+      the argv/report shape.
 
 Boundary (orchestrator CLAUDE.md):
-    - No business logic. The placeholder phase iteration is pure
-      orchestration scaffolding.
+    - No business logic. The Dagster job import is editor-time
+      orchestration scaffolding, not L4-L7 judgment.
     - No Kafka/Flink/CEP imports.
     - No Gate types defined here — the report's status enum is consumed
       from assembly's e2e schema (single source of truth).
@@ -130,7 +137,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--run-artifacts-dir",
         required=True,
         type=Path,
-        help="directory where placeholder cycle artifacts are written",
+        help="directory where runtime cycle artifacts are written",
     )
     parser.add_argument(
         "--report",
