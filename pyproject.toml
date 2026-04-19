@@ -28,6 +28,9 @@ dev = [
 [project.scripts]
 orchestrator = "orchestrator.cli.main:main"
 orchestrator-rerun = "orchestrator.cli.rerun:main"
+# min-cycle is the assembly-e2e public CLI; argv contract defined by
+# assembly/src/assembly/tests/e2e/fixtures/minimal_cycle/manifest.yaml
+min-cycle = "orchestrator.cli.min_cycle:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
