@@ -7,6 +7,8 @@ on:
     branches: [main]
 
 jobs:
+  # Existing full-suite lane preserved — full extras so legacy + contract
+  # cross-repo + regression all exercise the real fixture corpus.
   ci:
     runs-on: ubuntu-latest
     steps:
@@ -14,7 +16,61 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install
-        run: pip install -e ".[dev]"
+      - name: Install (full, incl. cross-repo + shared fixtures)
+        run: pip install -e ".[dev,contracts-schemas,shared-fixtures]"
       - name: Tests
         run: python -m pytest
+
+  # Stage-2 plan canonical lanes:
+  # - test-fast and smoke install only [dev] so they stay offline-first
+  #   per SUBPROJECT_TESTING_STANDARD.md §2.2.
+  # - regression installs [shared-fixtures] for real audit_eval_fixtures
+  #   consumption (no silent module-level skip per iron rule #1).
+  # - contract installs [contracts-schemas] for cross-repo alignment.
+  test-fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (offline-first dev only)
+        run: pip install -e ".[dev]"
+      - name: test-fast (unit + boundary)
+        run: make test-fast
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (offline-first dev only)
+        run: pip install -e ".[dev]"
+      - name: smoke
+        run: make smoke
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (with cross-repo contracts-schemas extra)
+        run: pip install -e ".[dev,contracts-schemas]"
+      - name: contract (incl. cross-repo alignment)
+        run: make contract
+
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (with shared-fixtures git extra)
+        run: pip install -e ".[dev,shared-fixtures]"
+      - name: regression (must really consume audit_eval_fixtures)
+        run: make regression

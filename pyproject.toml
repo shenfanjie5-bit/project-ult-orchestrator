@@ -24,6 +24,17 @@ dev = [
     "pytest-asyncio",
     "mypy",
 ]
+# Cross-repo schema source-of-truth pin (iron rule #6 + main-core
+# stage 2.3 follow-up #1 sub-rule). Required by tests/contract for
+# cross-repo alignment.
+contracts-schemas = [
+    "project-ult-contracts @ git+https://github.com/shenfanjie5-bit/project-ult-contracts.git@v0.1.2",
+]
+# Shared regression fixtures bundled with project-ult-audit-eval.
+# Pinned to v0.2.1 (iron rule #6).
+shared-fixtures = [
+    "project-ult-audit-eval @ git+https://github.com/shenfanjie5-bit/project-ult-audit-eval.git@v0.2.1",
+]
 
 [project.scripts]
 orchestrator = "orchestrator.cli.main:main"

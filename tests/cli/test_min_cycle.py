@@ -236,8 +236,14 @@ class TestReportSchema:
         assert report["status"] == "failed"
 
 
-class TestPlaceholderArtifacts:
-    def test_each_required_artifact_emits_placeholder_file(
+class TestRuntimeArtifacts:
+    """Per-artifact runtime payload contract (post-upgrade). The
+    placeholder mode has been removed in the
+    `upgrade-min-cycle-real-execution` issue; artifacts now carry real
+    Phase 0-3 assembly metadata.
+    """
+
+    def test_each_required_artifact_emits_runtime_file(
         self, tmp_path: Path
     ) -> None:
         manifest = _write_minimal_cycle_manifest(
@@ -252,13 +258,142 @@ class TestPlaceholderArtifacts:
             _build_argv(fixture=manifest, run_dir=run_dir, report=report_path)
         )
 
-        artifact = run_dir / "cycle_summary.placeholder.json"
+        # Filename is <kind>.json (no `.placeholder.` suffix).
+        artifact = run_dir / "cycle_summary.json"
         assert artifact.is_file()
         payload = json.loads(artifact.read_text())
         assert payload["kind"] == "cycle_summary"
         assert payload["scenario_id"] == "my-scenario"
         assert payload["profile_id"] == "lite-local"
-        assert payload["real_phase_execution"] is False
+        # Post-upgrade: real_phase_execution flips to True.
+        assert payload["real_phase_execution"] is True
+        # produced_by string drops the placeholder suffix.
+        assert payload["produced_by"] == "orchestrator.cli.min_cycle"
+
+    @pytest.mark.skip(
+        reason=(
+            "Placeholder mode has been removed in the "
+            "upgrade-min-cycle-real-execution issue (codex stage 2.4 "
+            "follow-up). This skip-marker stays as a tombstone so a "
+            "future revival is intentional, not accidental."
+        )
+    )
+    def test_legacy_placeholder_mode_removed_marker(self) -> None:
+        """Tombstone for the old placeholder mode.
+
+        Marked legacy_placeholder so CI grep can find it; skipped so it
+        doesn't run. If anyone needs to revive placeholder mode, they
+        should consciously delete this skip and add the corresponding
+        runtime branch.
+        """
+
+
+class TestRealPhaseExecution:
+    """Assembly e2e contract: post-upgrade min-cycle artifact payloads
+    must signal real Phase 0-3 assembly, not a placeholder run.
+
+    Per stage 2.5 plan + assembly OrchestratorCycleReport schema
+    (`extra="forbid"`, only 5 top-level fields), the real-execution
+    signal lives in the artifact payload — not in the report top
+    level. assembly's e2e runner reads the artifact paths from the
+    report's `artifacts` dict and parses each JSON to verify these
+    fields.
+    """
+
+    def test_artifact_carries_real_phase_execution_true(self, tmp_path: Path) -> None:
+        manifest = _write_minimal_cycle_manifest(
+            tmp_path / "manifest.yaml",
+            required_artifacts=["cycle_summary"],
+            scenario_id="real-exec-scenario",
+        )
+        run_dir = tmp_path / "run"
+        report_path = tmp_path / "report.json"
+
+        min_cycle_main(
+            _build_argv(fixture=manifest, run_dir=run_dir, report=report_path)
+        )
+
+        report = json.loads(report_path.read_text())
+        artifact_path = Path(report["artifacts"]["cycle_summary"])
+        payload = json.loads(artifact_path.read_text())
+        assert payload["real_phase_execution"] is True
+
+    def test_artifact_carries_non_empty_cycle_publish_manifest_id(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = _write_minimal_cycle_manifest(
+            tmp_path / "manifest.yaml",
+            required_artifacts=["cycle_summary"],
+            scenario_id="manifest-id-scenario",
+        )
+        run_dir = tmp_path / "run"
+        report_path = tmp_path / "report.json"
+
+        min_cycle_main(
+            _build_argv(fixture=manifest, run_dir=run_dir, report=report_path)
+        )
+
+        report = json.loads(report_path.read_text())
+        artifact_path = Path(report["artifacts"]["cycle_summary"])
+        payload = json.loads(artifact_path.read_text())
+        manifest_id = payload["cycle_publish_manifest_id"]
+        assert isinstance(manifest_id, str) and manifest_id, (
+            f"cycle_publish_manifest_id must be non-empty str, got {manifest_id!r}"
+        )
+        # Stable derivation: same scenario_id always yields same id
+        # (lets assembly e2e assert on a known-shape value).
+        assert "manifest_id_scenario" in manifest_id, manifest_id
+
+    def test_artifact_phases_executed_matches_manifest_expected_phases(
+        self, tmp_path: Path
+    ) -> None:
+        custom_phases = ["phase-a", "phase-b", "phase-c"]
+        manifest = _write_minimal_cycle_manifest(
+            tmp_path / "manifest.yaml",
+            expected_phases=custom_phases,
+            required_artifacts=["cycle_summary"],
+        )
+        run_dir = tmp_path / "run"
+        report_path = tmp_path / "report.json"
+
+        min_cycle_main(
+            _build_argv(fixture=manifest, run_dir=run_dir, report=report_path)
+        )
+
+        report = json.loads(report_path.read_text())
+        artifact_path = Path(report["artifacts"]["cycle_summary"])
+        payload = json.loads(artifact_path.read_text())
+        assert payload["phases_executed"] == custom_phases
+
+    def test_report_top_level_schema_unchanged(self, tmp_path: Path) -> None:
+        """The upgrade MUST NOT add fields to the report top level —
+        assembly's OrchestratorCycleReport schema is `extra="forbid"`
+        and only accepts profile_id / phases / artifacts / status /
+        failure_reason. Any new field at the top level would break
+        assembly e2e. New signals belong in the artifact payload only.
+        """
+        manifest = _write_minimal_cycle_manifest(tmp_path / "manifest.yaml")
+        report_path = tmp_path / "report.json"
+
+        min_cycle_main(
+            _build_argv(
+                fixture=manifest,
+                run_dir=tmp_path / "run",
+                report=report_path,
+            )
+        )
+
+        report = json.loads(report_path.read_text())
+        assert set(report.keys()) == {
+            "profile_id",
+            "phases",
+            "artifacts",
+            "status",
+            "failure_reason",
+        }, (
+            f"report top-level keys drift: got {set(report.keys())}; "
+            "OrchestratorCycleReport in assembly is extra='forbid'"
+        )
 
 
 class TestAgainstAssemblyRealFixture:
