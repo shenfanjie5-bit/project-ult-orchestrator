@@ -101,14 +101,14 @@ def test_llm_health_check_passes_when_probe_is_healthy(
         )
 
     assert result.passed is True
-    assert result.metadata["all_critical_targets_available"] == "true"
-    assert result.metadata["target_count"] == "2"
-    assert result.metadata["unavailable_target_count"] == "0"
-    assert result.metadata["providers"] == "backup-llm, fake-llm"
-    assert result.metadata["provider_models"] == (
+    assert result.metadata["all_critical_targets_available"].text == "true"
+    assert result.metadata["target_count"].text == "2"
+    assert result.metadata["unavailable_target_count"].text == "0"
+    assert result.metadata["providers"].text == "backup-llm, fake-llm"
+    assert result.metadata["provider_models"].text == (
         "fake-llm/fast-model, backup-llm/deep-model"
     )
-    provider_statuses = json.loads(result.metadata["provider_statuses"])
+    provider_statuses = json.loads(result.metadata["provider_statuses"].text)
     assert provider_statuses == [
         {
             "error": None,
@@ -162,9 +162,9 @@ def test_llm_health_check_passes_when_only_noncritical_target_is_unavailable(
     )
 
     assert result.passed is True
-    assert result.metadata["all_critical_targets_available"] == "true"
-    assert result.metadata["unavailable_target_count"] == "1"
-    assert result.metadata["unavailable_provider_models"] == (
+    assert result.metadata["all_critical_targets_available"].text == "true"
+    assert result.metadata["unavailable_target_count"].text == "1"
+    assert result.metadata["unavailable_provider_models"].text == (
         "optional-llm/optional-model"
     )
 
@@ -182,9 +182,9 @@ def test_llm_health_check_accepts_provider_status_list_contract(
     )
 
     assert result.passed is True
-    assert result.metadata["summary"] == "2 provider/model target(s) available"
-    assert result.metadata["all_critical_targets_available"] == "true"
-    assert result.metadata["provider_models"] == (
+    assert result.metadata["summary"].text == "2 provider/model target(s) available"
+    assert result.metadata["all_critical_targets_available"].text == "true"
+    assert result.metadata["provider_models"].text == (
         "fake-llm/fast-model, backup-llm/deep-model"
     )
 
@@ -221,17 +221,17 @@ def test_llm_health_check_fails_phase0_infra_with_fail_run_action(
     )
 
     assert result.passed is False
-    assert result.metadata["failure_class"] == "infra"
-    assert result.metadata["action"] == "fail_run"
-    assert result.metadata["scenario_id"] == "phase0_llm_health_check_failed"
-    assert result.metadata["providers"] == "backup-llm, fake-llm"
-    assert result.metadata["provider_models"] == (
+    assert result.metadata["failure_class"].text == "infra"
+    assert result.metadata["action"].text == "fail_run"
+    assert result.metadata["scenario_id"].text == "phase0_llm_health_check_failed"
+    assert result.metadata["providers"].text == "backup-llm, fake-llm"
+    assert result.metadata["provider_models"].text == (
         "fake-llm/critical-model, backup-llm/fallback-model"
     )
-    assert result.metadata["unavailable_provider_models"] == (
+    assert result.metadata["unavailable_provider_models"].text == (
         "fake-llm/critical-model"
     )
-    assert result.metadata["summary"] == (
+    assert result.metadata["summary"].text == (
         "critical target fake-llm/critical-model unavailable"
     )
 
@@ -292,12 +292,12 @@ def test_llm_health_check_probe_exception_is_policy_classified(
     payload = json.loads(caplog.records[-1].message)
 
     assert result.passed is False
-    assert result.metadata["provider"] == "fake-llm"
-    assert result.metadata["provider_models"] == "fake-llm/unknown"
-    assert result.metadata["summary"] == "llm health probe failed: probe timeout"
-    assert result.metadata["failure_class"] == "infra"
-    assert result.metadata["action"] == "fail_run"
-    assert result.metadata["scenario_id"] == "phase0_llm_health_check_failed"
+    assert result.metadata["provider"].text == "fake-llm"
+    assert result.metadata["provider_models"].text == "fake-llm/unknown"
+    assert result.metadata["summary"].text == "llm health probe failed: probe timeout"
+    assert result.metadata["failure_class"].text == "infra"
+    assert result.metadata["action"].text == "fail_run"
+    assert result.metadata["scenario_id"].text == "phase0_llm_health_check_failed"
     assert payload["failure_class"] == "infra"
     assert payload["action"] == "fail_run"
     assert payload["scenario_id"] == "phase0_llm_health_check_failed"
