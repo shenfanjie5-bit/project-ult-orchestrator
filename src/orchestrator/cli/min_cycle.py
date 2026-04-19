@@ -196,6 +196,39 @@ def _derive_cycle_publish_manifest_id(scenario_id: str) -> str:
     return f"MAN_{sanitized}_v0"
 
 
+def _try_assemble_dagster_jobs() -> tuple[list[str], str | None]:
+    """Real Phase 0-3 assembly: import + invoke
+    ``orchestrator.jobs.cycle.build_daily_cycle_jobs`` and return the
+    real Dagster job names.
+
+    Returns:
+        (job_names, error). On success, error is None and job_names is
+        non-empty (e.g. ``["daily_cycle_job"]``). On any failure
+        (dagster not installed, import error, builder raising) returns
+        ``([], <reason>)`` so the caller can record an honest signal in
+        the artifact payload — never silently claim execution happened.
+
+    Per orchestrator CLAUDE.md: assembling a Dagster job is editor-side
+    metadata production, not business logic. We do NOT call
+    ``materialize`` (that would touch real Iceberg/PG infra), only
+    ``build_daily_cycle_jobs`` which returns ``Job`` typed instances.
+    """
+    try:
+        from orchestrator.jobs.cycle import build_daily_cycle_jobs
+    except Exception as exc:  # pragma: no cover - dagster missing path
+        return [], f"build_daily_cycle_jobs import failed: {exc!s}"
+
+    try:
+        jobs = build_daily_cycle_jobs(None)
+    except Exception as exc:  # pragma: no cover - assembly raise path
+        return [], f"build_daily_cycle_jobs raise: {exc!s}"
+
+    job_names = [getattr(j, "name", repr(j)) for j in jobs]
+    if not job_names:
+        return [], "build_daily_cycle_jobs returned empty tuple"
+    return job_names, None
+
+
 def _emit_runtime_artifacts(
     *,
     run_artifacts_dir: Path,
@@ -204,29 +237,44 @@ def _emit_runtime_artifacts(
     profile_id: str,
     expected_phases: list[str],
 ) -> dict[str, str]:
-    """Write one real-runtime artifact file per required_artifact.
+    """Write one runtime artifact file per required_artifact.
 
     Each artifact's JSON payload carries the assembly e2e contract:
-      - ``real_phase_execution: true`` (the assertion assembly's e2e
-        runner will read out of the artifact payload)
-      - ``cycle_publish_manifest_id: str`` (non-empty, derived from
-        scenario_id; assembly e2e checks it is non-empty)
-      - ``phases_executed: list[str]`` (the phase set the orchestrator
-        confirmed was assembled — derived from manifest.expected_phases)
-      - ``produced_by: "orchestrator.cli.min_cycle"`` (source of truth
-        for downstream debugging)
-      - ``published_at: ISO 8601 UTC`` (matches CyclePublishManifest's
-        runtime field; assembly e2e can sanity-check freshness)
+      - ``real_phase_execution: bool`` — **true ONLY when** real Dagster
+        Phase 0-3 assembly succeeds (``build_daily_cycle_jobs`` returns
+        non-empty job tuple). On dagster import failure or builder
+        raise, **false** + ``assembly_error`` records the reason.
+        Codex stage 2.5 review #1 fix: previously this was
+        unconditionally ``true`` — a "shape-correct but semantically
+        stub" lie that would have let assembly stage 4 e2e false-pass
+        on a broken min-cycle.
+      - ``assembled_job_names: list[str]`` — real Dagster Job names
+        returned by the builder (empty iff real_phase_execution=false)
+      - ``assembly_error: str | None`` — non-None iff assembly failed
+      - ``cycle_publish_manifest_id: str`` — derived stably from
+        scenario_id so assembly e2e idempotent assertions hold.
 
-    Filenames are ``<kind>.json`` (not ``<kind>.placeholder.json`` —
-    placeholder mode has been removed; see legacy_placeholder marker in
-    tests).
+        **Caveat**: this is a name-derived synthetic id, NOT a real
+        Iceberg / PG manifest write. Real cycle_publish_manifest
+        persistence is a future stage's responsibility (requires
+        materialize + PG/Iceberg infra, out of scope for the min-cycle
+        assembly probe). assembly e2e should treat this as "assembly
+        succeeded for THIS shape", not "publish round-trip verified".
+      - ``phases_executed: list[str]`` — copy of manifest.expected_phases
+      - ``produced_by``, ``published_at`` — provenance + freshness
+
+    Filenames are ``<kind>.json``; legacy ``.placeholder.json`` removed.
     """
     from datetime import datetime, timezone
 
     run_artifacts_dir.mkdir(parents=True, exist_ok=True)
     manifest_id = _derive_cycle_publish_manifest_id(scenario_id)
     published_at = datetime.now(timezone.utc).isoformat()
+
+    # Codex stage 2.5 review #1 fix: real phase execution must be
+    # observed, not asserted unconditionally.
+    job_names, assembly_error = _try_assemble_dagster_jobs()
+    real_phase_execution = assembly_error is None and bool(job_names)
 
     artifacts: dict[str, str] = {}
     for kind in required_artifacts:
@@ -238,7 +286,9 @@ def _emit_runtime_artifacts(
                     "scenario_id": scenario_id,
                     "profile_id": profile_id,
                     "produced_by": _RUNTIME_PRODUCED_BY,
-                    "real_phase_execution": True,
+                    "real_phase_execution": real_phase_execution,
+                    "assembled_job_names": job_names,
+                    "assembly_error": assembly_error,
                     "cycle_publish_manifest_id": manifest_id,
                     "phases_executed": list(expected_phases),
                     "published_at": published_at,

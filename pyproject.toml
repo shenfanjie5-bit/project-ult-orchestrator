@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-ult-orchestrator"
-version = "0.1.0"
-description = "Scaffold workspace for orchestrator."
+version = "0.1.1"
+description = "Dagster-based Phase 0-3 cycle orchestration for project-ult."
 readme = "README.md"
-requires-python = ">=3.12"
+# Codex stage 2.5 review #3 fix: dagster<1.10 has no Python 3.13/3.14
+# wheels, so requires-python must cap at <3.13 to match the actually-
+# supported interpreter range. CI also pins 3.12.
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "dagster>=1.7,<1.10",
     "dagster-dbt>=0.23,<0.27",

@@ -316,7 +316,63 @@ class TestRealPhaseExecution:
         report = json.loads(report_path.read_text())
         artifact_path = Path(report["artifacts"]["cycle_summary"])
         payload = json.loads(artifact_path.read_text())
-        assert payload["real_phase_execution"] is True
+        # Codex stage 2.5 review #1 fix: real_phase_execution is now
+        # observed-not-asserted. In a dev venv (dagster present) this
+        # MUST be True AND the assembled_job_names list must be
+        # non-empty (proves real Dagster job builder ran, not a stub).
+        assert payload["real_phase_execution"] is True, (
+            f"real_phase_execution should be True when dagster is "
+            f"installed; assembly_error={payload.get('assembly_error')!r}"
+        )
+        assembled = payload["assembled_job_names"]
+        assert isinstance(assembled, list) and assembled, (
+            f"assembled_job_names should be non-empty list when assembly "
+            f"succeeds; got {assembled!r}"
+        )
+        assert payload["assembly_error"] is None
+
+    def test_artifact_records_assembly_failure_when_dagster_missing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Negative test: when build_daily_cycle_jobs raises (proxy for
+        dagster missing in dev venv), the artifact must record
+        real_phase_execution=False + a non-None assembly_error.
+
+        Codex stage 2.5 review #1: silent claims of execution must be
+        impossible. Monkeypatch the assembly probe to force the failure
+        path without uninstalling dagster.
+        """
+        from orchestrator.cli import min_cycle as min_cycle_module
+
+        def _fake_failure() -> tuple[list[str], str | None]:
+            return [], "build_daily_cycle_jobs import failed: simulated"
+
+        monkeypatch.setattr(
+            min_cycle_module, "_try_assemble_dagster_jobs", _fake_failure
+        )
+
+        manifest = _write_minimal_cycle_manifest(
+            tmp_path / "manifest.yaml",
+            required_artifacts=["cycle_summary"],
+            scenario_id="dagster-missing-scenario",
+        )
+        run_dir = tmp_path / "run"
+        report_path = tmp_path / "report.json"
+
+        rc = min_cycle_main(
+            _build_argv(fixture=manifest, run_dir=run_dir, report=report_path)
+        )
+        # min-cycle returns 0 (report written) regardless — assembly
+        # e2e reads artifact payload to surface the real signal. exit
+        # code 0 means "report written", not "execution succeeded".
+        assert rc == 0
+
+        report = json.loads(report_path.read_text())
+        artifact_path = Path(report["artifacts"]["cycle_summary"])
+        payload = json.loads(artifact_path.read_text())
+        assert payload["real_phase_execution"] is False
+        assert payload["assembled_job_names"] == []
+        assert "simulated" in payload["assembly_error"]
 
     def test_artifact_carries_non_empty_cycle_publish_manifest_id(
         self, tmp_path: Path
