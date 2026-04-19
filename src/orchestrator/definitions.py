@@ -198,14 +198,9 @@ def build_definitions(
             "ORCHESTRATOR_POLICY_PATH",
             DEFAULT_POLICY_PATH,
         )
+    policy = load_gate_policy(policy_path)
+    execution_backend = policy.execution_backend
     module_factory_list = _resolve_module_factories(module_factories)
-    try:
-        policy = load_gate_policy(policy_path)
-    except FileNotFoundError:
-        policy = None
-        execution_backend = "dagster_only"
-    else:
-        execution_backend = policy.execution_backend
     phase_config = {"execution_backend": execution_backend}
     daily_cycle_jobs = build_daily_cycle_jobs(phase_config)
     automatic_cycle_job = daily_cycle_jobs[0]
@@ -213,9 +208,6 @@ def build_definitions(
     data_readiness_sensor = build_data_readiness_sensor(automatic_cycle_job)
     sensors: list[object] = [data_readiness_sensor, manual_rerun_sensor]
     if execution_backend == "dagster_plus_temporal":
-        if policy is None:
-            msg = "temporal backend requires a loadable gate policy"
-            raise RuntimeError(msg)
         sensors.append(build_temporal_handoff_sensor(policy=policy))
 
     resource_bundle = build_resource_bundle(str(policy_path), module_factory_list)
