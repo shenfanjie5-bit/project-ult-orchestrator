@@ -61,7 +61,7 @@ def test_readiness_not_ready_fails_phase0_alerts_and_skips(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     dagster = dagster_module
-    from orchestrator.sensors.data_readiness import data_readiness_sensor
+    from orchestrator.sensors.data_readiness import evaluate_data_readiness_sensor
 
     policy = load_gate_policy(stub_policy_path)
     signal = DataReadinessSignal(
@@ -83,7 +83,7 @@ def test_readiness_not_ready_fails_phase0_alerts_and_skips(
         policy,
     )
     with caplog.at_level(logging.WARNING):
-        result = data_readiness_sensor.evaluation_fn(context)
+        result = evaluate_data_readiness_sensor(context)
 
     alert = _alert_payloads(caplog)[-1]
 

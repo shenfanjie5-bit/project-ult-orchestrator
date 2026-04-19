@@ -251,6 +251,7 @@ def test_phase3_manifest_failure_emits_repair_only_request_without_rollback(
         "rerun_of": "run-phase3-manifest",
         "failed_node": PHASE3_MANIFEST_ASSET_KEY,
         "rerun_mode": "repair_only",
+        "scenario_id": "phase3_manifest_write_failed",
     }
     assert _asset_selection_strings(run_request.asset_selection) == [repair_node]
     assert PHASE3_FORMAL_COMMIT_ASSET_KEY not in _asset_selection_strings(

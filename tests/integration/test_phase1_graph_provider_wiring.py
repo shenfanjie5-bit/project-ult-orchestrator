@@ -295,7 +295,7 @@ def _fake_graph_provider(
 
 def _fake_phase0_surface_provider(dagster: Any) -> object:
     from orchestrator.checks import DataReadinessSignal
-    from orchestrator.jobs.phase0 import (
+    from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
         PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
         PHASE0_GRAPH_STATUS_ASSET_KEY,
@@ -374,7 +374,7 @@ def _graph_gate_execution_defs(
     check_passes: bool,
     reload_before_ready: bool = False,
 ) -> tuple[object, list[str]]:
-    from orchestrator.jobs.phase0 import (
+    from orchestrator.jobs.phase0_constants import (
         PHASE0_CANDIDATE_FREEZE_ASSET_KEY,
         PHASE0_GRAPH_CONSISTENCY_CHECK_NAME,
         PHASE0_GRAPH_STATUS_ASSET_KEY,

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from tests.integration.conftest import (
     asset_check_evaluations,
     asset_materialization_keys,

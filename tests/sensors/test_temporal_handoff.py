@@ -52,6 +52,7 @@ def temporal_sensor_exports() -> dict[str, Any]:
         RESOURCE_BUNDLE_RESOURCE_KEY,
         build_temporal_handoff_sensor,
         evaluate_temporal_handoff_sensor,
+        evaluate_temporal_handoff_sensor_tick,
     )
 
     return {
@@ -66,6 +67,9 @@ def temporal_sensor_exports() -> dict[str, Any]:
         "RESOURCE_BUNDLE_RESOURCE_KEY": RESOURCE_BUNDLE_RESOURCE_KEY,
         "build_temporal_handoff_sensor": build_temporal_handoff_sensor,
         "evaluate_temporal_handoff_sensor": evaluate_temporal_handoff_sensor,
+        "evaluate_temporal_handoff_sensor_tick": (
+            evaluate_temporal_handoff_sensor_tick
+        ),
     }
 
 
@@ -243,8 +247,8 @@ def test_temporal_handoff_sensor_uses_client_from_resource_bundle_and_cursors_ru
     temporal_sensor_exports: dict[str, Any],
 ) -> None:
     SkipReason = temporal_sensor_exports["SkipReason"]
-    build_temporal_handoff_sensor = temporal_sensor_exports[
-        "build_temporal_handoff_sensor"
+    evaluate_temporal_handoff_sensor_tick = temporal_sensor_exports[
+        "evaluate_temporal_handoff_sensor_tick"
     ]
     client = RecordingHandoffClient()
     context = _FakeTemporalSensorContext(
@@ -258,9 +262,13 @@ def test_temporal_handoff_sensor_uses_client_from_resource_bundle_and_cursors_ru
             _phase0_run_record("phase0-run-1", "cycle-20260416", timestamp=1.0),
         ],
     )
-    sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    result = sensor_definition.evaluation_fn(context)
+    result = evaluate_temporal_handoff_sensor_tick(
+        context,
+        policy=_temporal_policy(),
+        phase0_job_name="daily_cycle_phase0_job",
+        failover_job_name="daily_cycle_job",
+    )
 
     assert isinstance(result, SkipReason)
     assert "started" in result.skip_message
@@ -279,8 +287,8 @@ def test_temporal_handoff_sensor_cursor_does_not_reprocess_older_run(
     temporal_sensor_exports: dict[str, Any],
 ) -> None:
     SkipReason = temporal_sensor_exports["SkipReason"]
-    build_temporal_handoff_sensor = temporal_sensor_exports[
-        "build_temporal_handoff_sensor"
+    evaluate_temporal_handoff_sensor_tick = temporal_sensor_exports[
+        "evaluate_temporal_handoff_sensor_tick"
     ]
     client = RecordingHandoffClient()
     cursor = json.dumps(
@@ -303,9 +311,13 @@ def test_temporal_handoff_sensor_cursor_does_not_reprocess_older_run(
             _phase0_run_record("phase0-run-1", "cycle-20260416", timestamp=1.0),
         ],
     )
-    sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    result = sensor_definition.evaluation_fn(context)
+    result = evaluate_temporal_handoff_sensor_tick(
+        context,
+        policy=_temporal_policy(),
+        phase0_job_name="daily_cycle_phase0_job",
+        failover_job_name="daily_cycle_job",
+    )
 
     assert isinstance(result, SkipReason)
     assert "no successful daily_cycle_phase0_job run is ready" in result.skip_message
@@ -317,8 +329,8 @@ def test_temporal_handoff_sensor_processes_unseen_run_at_same_timestamp(
     temporal_sensor_exports: dict[str, Any],
 ) -> None:
     SkipReason = temporal_sensor_exports["SkipReason"]
-    build_temporal_handoff_sensor = temporal_sensor_exports[
-        "build_temporal_handoff_sensor"
+    evaluate_temporal_handoff_sensor_tick = temporal_sensor_exports[
+        "evaluate_temporal_handoff_sensor_tick"
     ]
     client = RecordingHandoffClient()
     context = _FakeTemporalSensorContext(
@@ -332,11 +344,25 @@ def test_temporal_handoff_sensor_processes_unseen_run_at_same_timestamp(
             _phase0_run_record("phase0-run-1", "cycle-20260416", timestamp=2.0),
         ],
     )
-    sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    first_result = sensor_definition.evaluation_fn(context)
-    second_result = sensor_definition.evaluation_fn(context)
-    third_result = sensor_definition.evaluation_fn(context)
+    first_result = evaluate_temporal_handoff_sensor_tick(
+        context,
+        policy=_temporal_policy(),
+        phase0_job_name="daily_cycle_phase0_job",
+        failover_job_name="daily_cycle_job",
+    )
+    second_result = evaluate_temporal_handoff_sensor_tick(
+        context,
+        policy=_temporal_policy(),
+        phase0_job_name="daily_cycle_phase0_job",
+        failover_job_name="daily_cycle_job",
+    )
+    third_result = evaluate_temporal_handoff_sensor_tick(
+        context,
+        policy=_temporal_policy(),
+        phase0_job_name="daily_cycle_phase0_job",
+        failover_job_name="daily_cycle_job",
+    )
 
     assert isinstance(first_result, SkipReason)
     assert isinstance(second_result, SkipReason)
@@ -358,8 +384,8 @@ def test_temporal_handoff_sensor_legacy_cursor_stops_at_processed_run(
     temporal_sensor_exports: dict[str, Any],
 ) -> None:
     SkipReason = temporal_sensor_exports["SkipReason"]
-    build_temporal_handoff_sensor = temporal_sensor_exports[
-        "build_temporal_handoff_sensor"
+    evaluate_temporal_handoff_sensor_tick = temporal_sensor_exports[
+        "evaluate_temporal_handoff_sensor_tick"
     ]
     client = RecordingHandoffClient()
     context = _FakeTemporalSensorContext(
@@ -374,9 +400,13 @@ def test_temporal_handoff_sensor_legacy_cursor_stops_at_processed_run(
             _phase0_run_record("phase0-run-1", "cycle-20260416", timestamp=1.0),
         ],
     )
-    sensor_definition = build_temporal_handoff_sensor(policy=_temporal_policy())
 
-    result = sensor_definition.evaluation_fn(context)
+    result = evaluate_temporal_handoff_sensor_tick(
+        context,
+        policy=_temporal_policy(),
+        phase0_job_name="daily_cycle_phase0_job",
+        failover_job_name="daily_cycle_job",
+    )
 
     assert isinstance(result, SkipReason)
     assert "no successful daily_cycle_phase0_job run is ready" in result.skip_message

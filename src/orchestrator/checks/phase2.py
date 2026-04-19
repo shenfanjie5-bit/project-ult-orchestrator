@@ -1,15 +1,32 @@
-"""Phase 2 gate adapters."""
+"""Phase 2 gate adapters.
 
-from __future__ import annotations
+Note: do NOT add ``from __future__ import annotations`` to this module.
+Dagster 1.9's ``@asset_check`` decorator inspects the type annotations on the
+decorated function via runtime introspection. With future-annotations enabled,
+all annotations become strings, and Dagster's identity check (annotation is
+AssetCheckExecutionContext) fails. Keep annotations as real class references.
+"""
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from math import isfinite
 from typing import Protocol
 
+from dagster import (
+    AssetCheckExecutionContext,
+    AssetCheckResult,
+    ResourceParam,
+    asset_check,
+)
+
 from orchestrator.checks.classifier import classify_gate_result
 from orchestrator.checks.decision_handler import dispatch_gate_decision_alert
 from orchestrator.checks.models import GateDecision
+# Import GatePolicyResource + Dagster ResourceParam at module level so the
+# @asset_check decorator can resolve annotations at decoration time. Without
+# this, Dagster 1.9 raises DagsterInvalidDefinitionError trying to resolve
+# these from function-local scope.
+from orchestrator.checks.resources import GatePolicyResource
 from orchestrator.policy import FailureClass, GateAction, GatePolicyProfile, PhaseEnum
 
 _POOL_FAILURE_RATE_KEY = "phase2_pool_failure_rate"
@@ -148,17 +165,13 @@ def dispatch_phase2_pool_failure_alert(
 def build_phase2_pool_failure_rate_check(asset: object) -> object:
     """Build the production Dagster AssetCheck for the Phase 2 pool gate."""
 
-    from dagster import AssetCheckResult, ResourceParam, asset_check
-
-    from orchestrator.checks.resources import GatePolicyResource
-
     @asset_check(
         asset=asset,
         name=PHASE2_POOL_FAILURE_RATE_CHECK_NAME,
         blocking=True,
     )
     def phase2_pool_failure_rate_gate(
-        context: object,
+        context: AssetCheckExecutionContext,
         gate_policy: GatePolicyResource,
         phase2_pool_failure_rate: ResourceParam[Phase2PoolFailureRateProvider],
     ) -> AssetCheckResult:

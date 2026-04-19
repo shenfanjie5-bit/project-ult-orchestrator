@@ -10,6 +10,7 @@ from orchestrator.sensors.temporal_handoff import (
     TEMPORAL_HANDOFF_CLIENT_RESOURCE_KEY,
     build_temporal_handoff_sensor,
     evaluate_temporal_handoff_sensor,
+    evaluate_temporal_handoff_sensor_tick,
     temporal_handoff_sensor,
 )
 
@@ -20,6 +21,7 @@ __all__ = [
     "data_readiness_sensor",
     "evaluate_data_readiness_sensor",
     "evaluate_temporal_handoff_sensor",
+    "evaluate_temporal_handoff_sensor_tick",
     "manual_rerun_sensor",
     "temporal_handoff_sensor",
 ]

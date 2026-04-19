@@ -137,7 +137,7 @@ def _fake_data_platform_provider(
             "resource_bundle",
         },
     )
-    def candidate_freeze(context: object) -> str:
+    def candidate_freeze(context) -> str:
         fake_resource = context.resources.fake_data_platform_resource
         bundle = context.resources.resource_bundle
         assert bundle.read_only is True

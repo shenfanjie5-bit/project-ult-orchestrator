@@ -23,6 +23,19 @@ def _clear_phase0_imports() -> None:
             sys.modules.pop(module_name, None)
         elif module_name.startswith("orchestrator.jobs."):
             sys.modules.pop(module_name, None)
+        # Sensor modules import daily_cycle_job/daily_cycle_phase0_job at module
+        # load and instantiate sensors bound to those job references. After
+        # clearing orchestrator.jobs.*, those bound references become stale and
+        # collide with the freshly imported job in Definitions. Clear sensor
+        # modules so they re-bind to the new job instances.
+        elif module_name == "orchestrator.sensors":
+            sys.modules.pop(module_name, None)
+        elif module_name.startswith("orchestrator.sensors."):
+            sys.modules.pop(module_name, None)
+        elif module_name == "orchestrator.schedules":
+            sys.modules.pop(module_name, None)
+        elif module_name.startswith("orchestrator.schedules."):
+            sys.modules.pop(module_name, None)
 
 
 @pytest.fixture
