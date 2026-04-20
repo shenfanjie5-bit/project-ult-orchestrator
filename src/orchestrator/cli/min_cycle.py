@@ -88,18 +88,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     expected_phases: list[str] = list(manifest.get("expected_phases") or [])
     required_artifacts: list[str] = list(manifest.get("required_artifacts") or [])
 
-    # Real Phase 0-3 assembly emit (codex stage 2.4 follow-up;
-    # `upgrade-min-cycle-real-execution` issue): each artifact carries
-    # real_phase_execution=true + a non-empty cycle_publish_manifest_id +
-    # the phases that were assembled. The signal lives in the artifact
-    # *payload* (not the report top level — assembly's
-    # OrchestratorCycleReport schema is extra="forbid", only 5 fields).
+    # Real Phase 0-3 assembly probe (codex stage 2.4 follow-up;
+    # `upgrade-min-cycle-real-execution` issue). Each artifact carries
+    # real_phase_execution + assembled_job_names + assembly_error +
+    # cycle_publish_manifest_id (a stable derived synthetic id, not a
+    # persisted manifest). The signal lives in the artifact *payload*
+    # (not the report top level — assembly's OrchestratorCycleReport
+    # schema is extra="forbid", only 5 fields).
     #
-    # Per orchestrator CLAUDE.md "不引入业务逻辑" we DO NOT import
-    # Dagster jobs / materialize anything here — assembly's e2e validates
-    # the report and artifact shapes, not real Iceberg writes (those
-    # belong to a future stage with PG/Iceberg infra). This is "Phase 0-3
-    # *assembly* on the minimal fixture", not "Phase 0-3 *execution*".
+    # Boundary: we DO real-import + call the Dagster job builder
+    # `build_daily_cycle_jobs(None)` (see `_try_assemble_dagster_jobs`)
+    # to OBSERVE whether the cycle assembly path is wireable. This is
+    # the assembly probe (observe-not-assert real_phase_execution) — we
+    # do NOT materialize anything (no Iceberg writes, no PG mutations,
+    # no Kafka publishes). Per orchestrator CLAUDE.md "不引入业务逻辑":
+    # business logic = L1-L8 algorithms / feature computation / storage
+    # writes / graph propagation; Dagster job assembly itself IS the
+    # orchestration layer's responsibility, so import + assembly probe
+    # belongs here. Real Iceberg/PG writes belong to a future stage
+    # with full infra (and would not change min-cycle's contract — the
+    # assembly probe stays observe-only).
+    #
+    # Distinction: this is "Phase 0-3 assembly on the minimal fixture",
+    # NOT "Phase 0-3 execution".
     artifacts = _emit_runtime_artifacts(
         run_artifacts_dir=run_artifacts_dir,
         required_artifacts=required_artifacts,
