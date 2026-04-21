@@ -34,7 +34,13 @@ from typing import Any
 from orchestrator import __version__ as _MODULE_VERSION
 
 _MODULE_ID = "orchestrator"
-_CONTRACT_VERSION = f"v{_MODULE_VERSION}"
+# Stage 4 §4.1.5: contract_version is the canonical contracts schema version
+# this module is bound against (NOT this module's own package version, which
+# stays in module_version). Harmonized to v0.1.3 across all 11 active
+# subsystem modules so assembly's ContractsVersionCheck (strict equality vs
+# matrix.contract_version) succeeds at the cross-project compat audit
+# (assembly/scripts/stage_3_compat_audit.py + Stage 4 §4.1 registry).
+_CONTRACT_VERSION = "v0.1.3"
 _COMPATIBLE_CONTRACT_RANGE = ">=0.1.0,<0.2.0"
 
 
