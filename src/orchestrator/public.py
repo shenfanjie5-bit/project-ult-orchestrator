@@ -149,20 +149,41 @@ class _VersionDeclaration:
 
 
 class _Cli:
-    """CLI entrypoint — minimal argparse dispatcher.
+    """CLI entrypoint — argparse dispatcher for assembly-facing
+    subcommands.
 
-    Currently supports ``version``. Returns POSIX exit codes (0 ok, 2
-    invalid usage). The argv parameter is positional-or-keyword to match
-    the assembly ``CliEntrypoint`` protocol.
+    Subcommands:
+      * ``version`` — print module/contract version (default).
+      * ``min-cycle`` — delegate to ``orchestrator.cli.min_cycle.main``,
+        the minimal-cycle CLI assembly e2e (``run_min_cycle_e2e``)
+        invokes via the public ``cli`` entrypoint registered in
+        ``assembly/module-registry.yaml``. Stage 4 §4.3 prerequisite:
+        without this dispatch the assembly e2e fails with
+        ``orchestrator: error: argument subcommand: invalid choice:
+        'min-cycle'`` and the §4.2 positive regression cannot reach
+        ``status="success"``. Remaining argv after ``min-cycle`` is
+        forwarded verbatim (``--profile``, ``--fixture``, etc.).
+
+    Returns POSIX exit codes (0 ok, 2 invalid usage). The argv
+    parameter is positional-or-keyword to match the assembly
+    ``CliEntrypoint`` protocol.
 
     NOT to be confused with ``orchestrator.cli.main:main`` (the full
-    operational CLI dispatching diag / min-cycle / rerun); this one is
-    the assembly-integration public-protocol entrypoint.
+    operational CLI dispatching diag / min-cycle / rerun via Click);
+    this one is the assembly-integration public-protocol entrypoint.
     """
 
     _PROG = "orchestrator"
 
     def invoke(self, argv: list[str]) -> int:
+        # ``min-cycle`` has its own argparse parser — pre-dispatch
+        # before the outer parser tries to validate ``--profile`` etc.
+        # as outer flags.
+        if argv and argv[0] == "min-cycle":
+            from orchestrator.cli.min_cycle import main as min_cycle_main
+
+            return int(min_cycle_main(argv[1:]) or 0)
+
         parser = argparse.ArgumentParser(
             prog=self._PROG,
             description="orchestrator public CLI (assembly integration)",
@@ -171,7 +192,7 @@ class _Cli:
             "subcommand",
             nargs="?",
             default="version",
-            choices=("version",),
+            choices=("version", "min-cycle"),
             help="subcommand to run (default: version)",
         )
         try:

@@ -315,7 +315,18 @@ def _emit_runtime_artifacts(
             ),
             encoding="utf-8",
         )
-        artifacts[kind] = str(path)
+        # Stage 4 §4.3 Lite-stack e2e fix: emit the artifact path
+        # **relative to the run_artifacts_dir** (not absolute). Assembly's
+        # ``assert_required_artifacts`` (in
+        # ``assembly.tests.e2e.assertions``) requires
+        # ``cycle_report.artifacts[kind]`` to be a relative path so that
+        # base_dir resolution stays inside the run dir; absolute paths
+        # produce ``Required artifact path must be relative to the run
+        # artifact directory`` failures. ``path.name`` is the per-kind
+        # filename — exactly the contract assembly's
+        # ``assert_required_artifacts`` and ``assert_artifact_payload_
+        # invariants`` resolve from ``base_dir / artifact_path``.
+        artifacts[kind] = path.name
     return artifacts
 
 
