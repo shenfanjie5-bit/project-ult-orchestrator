@@ -1,0 +1,46 @@
+{
+  "items": [
+    {
+      "run_id": "RUN_API4A_001",
+      "cycle_id": "CYCLE_20260424",
+      "status": "success",
+      "trigger": "scheduled",
+      "started_at": "2026-04-24T00:00:00Z",
+      "ended_at": "2026-04-24T00:05:00Z",
+      "phases": [
+        {
+          "phase": "formal_snapshot_read",
+          "status": "success"
+        },
+        {
+          "phase": "audit_eval_read",
+          "status": "success"
+        }
+      ],
+      "metadata": {
+        "contract": "api-4a-readonly"
+      }
+    },
+    {
+      "run_id": "RUN_API4A_002",
+      "cycle_id": "CYCLE_20260424",
+      "status": "running",
+      "trigger": "scheduled",
+      "started_at": "2026-04-24T01:00:00Z",
+      "ended_at": null,
+      "phases": [
+        {
+          "phase": "reasoner_read",
+          "status": "running"
+        }
+      ],
+      "metadata": {
+        "contract": "api-4a-readonly"
+      }
+    }
+  ],
+  "metadata": {
+    "source": "orchestrator frontend-api artifact",
+    "snapshot_id": "api4a_orchestrator_runs_001"
+  }
+}

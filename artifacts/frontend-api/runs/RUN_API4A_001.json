@@ -1,0 +1,26 @@
+{
+  "run_id": "RUN_API4A_001",
+  "cycle_id": "CYCLE_20260424",
+  "status": "success",
+  "trigger": "scheduled",
+  "started_at": "2026-04-24T00:00:00Z",
+  "ended_at": "2026-04-24T00:05:00Z",
+  "steps": [
+    {
+      "step_id": "formal_snapshot_read",
+      "status": "success",
+      "started_at": "2026-04-24T00:00:10Z",
+      "ended_at": "2026-04-24T00:01:00Z"
+    },
+    {
+      "step_id": "audit_eval_read",
+      "status": "success",
+      "started_at": "2026-04-24T00:01:10Z",
+      "ended_at": "2026-04-24T00:02:00Z"
+    }
+  ],
+  "metadata": {
+    "source": "orchestrator frontend-api artifact",
+    "contract": "api-4a-readonly"
+  }
+}
