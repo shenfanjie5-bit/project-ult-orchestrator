@@ -11,6 +11,7 @@ from tests.integration.conftest import (
     asset_check_evaluations,
     asset_materialization_keys,
     materialization_order,
+    metadata_value,
 )
 
 if TYPE_CHECKING:
@@ -133,9 +134,82 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
     } <= evaluation_names
 
 
+def test_daily_cycle_hard_stops_before_phase2_and_publish_when_llm_health_fails(
+    dagster_module: object,
+    dagster_dbt_module: object,
+    dagster_instance: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
+    assert dagster_dbt_module is not None
+
+    from orchestrator.definitions import build_definitions
+    from orchestrator.jobs.phase0 import dbt_phase0_assets
+    from orchestrator.jobs.phase2 import PHASE2_STAGE_KEYS
+    from orchestrator.jobs.phase3 import (
+        PHASE3_FORMAL_COMMIT_ASSET_KEY,
+        PHASE3_MANIFEST_ASSET_KEY,
+    )
+
+    heartbeat_key = _heartbeat_asset_key(dbt_phase0_assets)
+
+    defs = build_definitions(
+        module_factories=[
+            fake_data_platform_reasoner_provider(
+                dagster,
+                heartbeat_key,
+                llm_available=False,
+            ),
+            fake_graph_engine_provider(dagster),
+            fake_main_core_provider(dagster),
+            fake_audit_eval_provider(dagster),
+        ],
+        policy_path=stub_policy_path,
+    )
+    dagster.Definitions.validate_loadable(defs)
+
+    result = defs.get_job_def("daily_cycle_job").execute_in_process(
+        instance=dagster_instance,
+        raise_on_error=False,
+        tags={"cycle_id": "cycle-20260427-no-llm"},
+    )
+
+    materialized_keys = asset_materialization_keys(result)
+    llm_health_evaluation = _check_evaluation_by_name(result, "llm_health_check")
+
+    assert result.success is False
+    assert getattr(llm_health_evaluation, "passed", None) is False
+    assert metadata_value(
+        llm_health_evaluation,
+        "scenario_id",
+    ) == "phase0_llm_health_check_failed"
+    assert metadata_value(llm_health_evaluation, "action") == "fail_run"
+    assert metadata_value(
+        llm_health_evaluation,
+        "all_critical_targets_available",
+    ) == "false"
+    assert metadata_value(llm_health_evaluation, "unavailable_target_count") == "3"
+
+    blocked_phase2_keys = {
+        dagster.AssetKey([PHASE2_STAGE_KEYS[3]]),
+        dagster.AssetKey([PHASE2_STAGE_KEYS[5]]),
+        dagster.AssetKey([PHASE2_STAGE_KEYS[6]]),
+        dagster.AssetKey([PHASE2_STAGE_KEYS[7]]),
+    }
+    blocked_publish_keys = {
+        dagster.AssetKey([PHASE3_FORMAL_COMMIT_ASSET_KEY]),
+        dagster.AssetKey([PHASE3_MANIFEST_ASSET_KEY]),
+    }
+    assert materialized_keys.isdisjoint(blocked_phase2_keys)
+    assert materialized_keys.isdisjoint(blocked_publish_keys)
+
+
 def fake_data_platform_reasoner_provider(
     dagster: Any,
     heartbeat_key: object,
+    *,
+    llm_available: bool = True,
 ) -> AssetFactoryProvider:
     from orchestrator.checks import DataReadinessSignal
     from orchestrator.jobs.phase0_constants import (
@@ -155,17 +229,52 @@ def fake_data_platform_reasoner_provider(
             return FakeDataReadinessProvider()
 
     class FakeProviderHealthStatus:
-        provider = "fake-llm"
-        model = "critical-model"
-        reachable = True
-        latency_ms = 12.0
-        quota_status = "available"
-        error = None
+        def __init__(
+            self,
+            *,
+            provider: str,
+            model: str,
+            reachable: bool,
+            quota_status: str,
+            error: str | None,
+        ) -> None:
+            self.provider = provider
+            self.model = model
+            self.reachable = reachable
+            self.latency_ms = None if not reachable else 12.0
+            self.quota_status = quota_status
+            self.error = error
 
     class FakeLLMHealthReport:
-        provider_statuses = (FakeProviderHealthStatus(),)
-        all_critical_targets_available = True
-        summary = "provider ready"
+        provider_statuses = (
+            FakeProviderHealthStatus(
+                provider="minimax",
+                model="MiniMax-M2.5",
+                reachable=llm_available,
+                quota_status="available" if llm_available else "unavailable",
+                error=None if llm_available else "provider health failed",
+            ),
+            FakeProviderHealthStatus(
+                provider="openai-codex",
+                model="gpt-5.5",
+                reachable=llm_available,
+                quota_status="available" if llm_available else "unavailable",
+                error=None if llm_available else "provider health failed",
+            ),
+            FakeProviderHealthStatus(
+                provider="claude-code",
+                model="claude-sonnet-4-6",
+                reachable=llm_available,
+                quota_status="available" if llm_available else "unavailable",
+                error=None if llm_available else "provider health failed",
+            ),
+        )
+        all_critical_targets_available = llm_available
+        summary = (
+            "all configured LLM provider/model targets available"
+            if llm_available
+            else "all configured LLM provider/model targets unavailable"
+        )
 
     class FakeLLMHealthProbe:
         def check_health(self) -> FakeLLMHealthReport:
@@ -511,6 +620,13 @@ def _check_name(evaluation: object) -> str | None:
     check_key = getattr(evaluation, "check_key", None)
     name = getattr(check_key, "name", None)
     return name if isinstance(name, str) else None
+
+
+def _check_evaluation_by_name(result: object, check_name: str) -> object:
+    for evaluation in asset_check_evaluations(result):
+        if _check_name(evaluation) == check_name:
+            return evaluation
+    pytest.fail(f"missing asset check evaluation: {check_name}")
 
 
 def _run_request_job_name(run_request: object) -> str | None:
