@@ -50,7 +50,7 @@ def test_daily_cycle_phase2_pool_failure_rate_gate_fails_and_alerts(
     payloads = _alert_payloads(caplog.records)
 
     assert result.success is False
-    assert dagster.AssetKey(["l7"]) in materialized_keys
+    assert dagster.AssetKey(["l8"]) in materialized_keys
     assert dagster.AssetKey([_DOWNSTREAM_PUBLISH_ASSET_KEY]) not in materialized_keys
     assert getattr(evaluation, "passed", None) is False
     assert metadata_value(evaluation, "action") == "fail_run"
@@ -102,7 +102,7 @@ def test_daily_cycle_phase2_pool_failure_rate_gate_allows_without_alert(
     )
 
     assert result.success is True
-    assert dagster.AssetKey(["l7"]) in materialized_keys
+    assert dagster.AssetKey(["l8"]) in materialized_keys
     assert dagster.AssetKey([_DOWNSTREAM_PUBLISH_ASSET_KEY]) in materialized_keys
     assert getattr(evaluation, "passed", None) is True
     assert metadata_value(evaluation, "action") == "continue"

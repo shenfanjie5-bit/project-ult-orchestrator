@@ -142,7 +142,7 @@ def test_phase3_formal_commit_without_phase2_dependency_is_rejected(
 
     with pytest.raises(
         ValueError,
-        match="formal_objects_commit.*Phase 2.*l7",
+        match="formal_objects_commit.*Phase 2.*l8",
     ):
         build_definitions(
             module_factories=[
