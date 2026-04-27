@@ -120,6 +120,103 @@ def test_p2_dry_run_materializes_current_cycle_l8_and_manifest_handoff(
     assert "ENT_P2_B" not in committed_entities
 
 
+def test_p2_dry_run_handoff_uses_data_platform_tushare_provider(
+    dagster_module: object,
+    dagster_instance: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dagster = dagster_module
+
+    from audit_eval.audit import InMemoryFormalAuditStorageAdapter
+    from orchestrator.definitions import build_definitions
+    from orchestrator.jobs.phase3 import PHASE3_FORMAL_COMMIT_ASSET_KEY
+    from orchestrator_adapters import p2_dry_run
+    from orchestrator_adapters.p2_dry_run import (
+        AuditEvalPersistencePort,
+        DataPlatformTushareCurrentCycleInputProvider,
+        DefaultReasonerRuntimeGateway,
+        P2DryRunAssetFactoryProvider,
+    )
+
+    def fake_candidates(cycle_id: str) -> tuple[dict[str, object], ...]:
+        assert cycle_id == "CYCLE_20260416"
+        return (
+            {"candidate_id": 10, "ts_code": "600519.SH", "submitted_by": "candidate-freeze"},
+            {"candidate_id": 11, "ts_code": "000001.SZ", "submitted_by": "candidate-freeze"},
+        )
+
+    def fake_rows(
+        *,
+        cycle_date: date,
+        symbols: Sequence[str],
+    ) -> tuple[dict[str, object], ...]:
+        assert cycle_date == date(2026, 4, 16)
+        assert tuple(symbols) == ("600519.SH", "000001.SZ")
+        return (
+            _tushare_staging_row("000001.SZ", -0.4),
+            _tushare_staging_row("600519.SH", 1.2),
+        )
+
+    monkeypatch.setattr(p2_dry_run, "_load_frozen_candidate_symbols", fake_candidates)
+    monkeypatch.setattr(p2_dry_run, "_load_tushare_staging_rows", fake_rows)
+
+    reasoner_recorder = _ReasonerRecorder()
+    publish_recorder = _PublishRecorder()
+    audit_storage = InMemoryFormalAuditStorageAdapter()
+    provider = P2DryRunAssetFactoryProvider(
+        reasoner_gateway=DefaultReasonerRuntimeGateway(
+            client_factory=reasoner_recorder.client_factory,
+            health_probe=_reasoner_health_probe(available=True),
+        ),
+        publish_port_factory=lambda: _FakePublishPort(publish_recorder),
+        audit_persistence_port=AuditEvalPersistencePort(
+            storage_factory=lambda: audit_storage,
+        ),
+    )
+    assert isinstance(provider.input_provider, DataPlatformTushareCurrentCycleInputProvider)
+    defs = build_definitions(
+        module_factories=[
+            _fake_phase0_provider(dagster),
+            _fake_phase1_provider(dagster),
+            provider,
+        ],
+        policy_path=stub_policy_path,
+    )
+    dagster.Definitions.validate_loadable(defs)
+
+    result = defs.get_job_def("daily_cycle_job").execute_in_process(
+        instance=dagster_instance,
+        tags={"cycle_id": "CYCLE_20260416"},
+    )
+
+    formal_commit = result.output_for_node(PHASE3_FORMAL_COMMIT_ASSET_KEY)
+    pool_payload = next(
+        call["payload"]
+        for call in publish_recorder.commit_calls
+        if call["object_key"] == "official_alpha_pool"
+    )
+    committed_entities = set(pool_payload["selected_entities"])
+
+    assert result.success is True
+    assert formal_commit.state.input_evidence["source"] == (
+        "data-platform:tushare-staging:frozen-candidates"
+    )
+    assert formal_commit.state.input_evidence["candidate_ids"] == [10, 11]
+    assert formal_commit.state.input_evidence["symbols"] == ["600519.SH", "000001.SZ"]
+    assert formal_commit.state.input_evidence["source_run_ids"] == [
+        "daily-run-000001.SZ",
+        "daily-run-600519.SH",
+        "stock-basic-run-000001.SZ",
+        "stock-basic-run-600519.SH",
+    ]
+    assert committed_entities == {"600519.SH", "000001.SZ"}
+    assert "ENT_P2_A" not in committed_entities
+    assert "ENT_P2_B" not in committed_entities
+    assert publish_recorder.manifest_provenance is not None
+
+
 def test_p2_dry_run_hard_stops_without_llm_before_l8_or_publish(
     dagster_module: object,
     dagster_instance: object,
@@ -297,6 +394,56 @@ def test_audit_eval_persistence_port_uses_retry_safe_bundle_writer(
     assert result.replay_record_ids == ("replay-current-cycle-l8",)
 
 
+def test_audit_eval_persistence_port_durable_retry_recovers_half_written_audit_rows(
+    tmp_path: Path,
+) -> None:
+    duckdb = pytest.importorskip("duckdb")
+
+    from audit_eval.audit import (
+        DuckDBReplayRepository,
+        ManagedDuckDBFormalAuditStorageAdapter,
+        persist_audit_records,
+    )
+    from orchestrator_adapters.p2_dry_run import AuditEvalPersistencePort
+
+    db_path = tmp_path / "audit_eval.duckdb"
+    storage = ManagedDuckDBFormalAuditStorageAdapter(db_path)
+    write_bundle = _sample_p2_audit_write_bundle(dagster_run_id="dagster-run-first")
+    retried_bundle = _sample_p2_audit_write_bundle(dagster_run_id="dagster-run-retry")
+    expected_audit_ids = [record.record_id for record in write_bundle.audit_records]
+    expected_replay_ids = [record.replay_id for record in write_bundle.replay_records]
+
+    persist_audit_records(write_bundle, storage)
+    first = AuditEvalPersistencePort(storage_factory=lambda: storage).persist(retried_bundle)
+    second = AuditEvalPersistencePort(storage_factory=lambda: storage).persist(
+        _sample_p2_audit_write_bundle(dagster_run_id="dagster-run-second-retry")
+    )
+    repository = DuckDBReplayRepository(db_path)
+
+    assert first.audit_record_ids == tuple(expected_audit_ids)
+    assert first.replay_record_ids == tuple(expected_replay_ids)
+    assert second == first
+    assert write_bundle.metadata["dagster_run_id"] == "dagster-run-first"
+    assert retried_bundle.metadata["dagster_run_id"] == "dagster-run-retry"
+    assert retried_bundle.audit_records == write_bundle.audit_records
+    assert retried_bundle.replay_records == write_bundle.replay_records
+    assert repository.get_audit_records(expected_audit_ids) == list(retried_bundle.audit_records)
+    assert repository.get_replay_record_by_id(expected_replay_ids[0]) == retried_bundle.replay_records[0]
+
+    connection = duckdb.connect(str(db_path), read_only=True)
+    try:
+        audit_count = connection.execute(
+            'SELECT count(*) FROM "audit_eval"."audit_eval"."audit_records"'
+        ).fetchone()[0]
+        replay_count = connection.execute(
+            'SELECT count(*) FROM "audit_eval"."audit_eval"."replay_records"'
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert audit_count == len(expected_audit_ids)
+    assert replay_count == len(expected_replay_ids)
+
+
 def test_data_platform_tushare_provider_loads_current_cycle_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -349,7 +496,9 @@ def test_data_platform_tushare_provider_loads_current_cycle_evidence(
     assert inputs.evidence["source"] == "data-platform:tushare-staging:frozen-candidates"
 
 
-def test_load_frozen_candidate_symbols_rejects_ent_p2_synthetic_candidates(
+@pytest.mark.parametrize("marker", ["ENT_P2_A", "ENT_P2_B", "synthetic-current-cycle"])
+def test_load_frozen_candidate_symbols_rejects_synthetic_candidates(
+    marker: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from data_platform.cycle import repository
@@ -358,17 +507,19 @@ def test_load_frozen_candidate_symbols_rejects_ent_p2_synthetic_candidates(
     rows = [
         {
             "candidate_id": 1,
-            "payload": json.dumps({"ts_code": "ENT_P2_A"}),
+            "payload": json.dumps({"ts_code": marker}),
             "submitted_by": "candidate-freeze",
         }
     ]
     monkeypatch.setattr(repository, "_create_engine", lambda: _FakeEngine(rows))
 
-    with pytest.raises(ValueError, match="ENT_P2"):
+    with pytest.raises(ValueError, match="synthetic|ENT_P2"):
         p2_dry_run._load_frozen_candidate_symbols("CYCLE_20260416")
 
 
+@pytest.mark.parametrize("marker", ["ENT_P2_A", "ENT_P2_B", "synthetic-current-cycle"])
 def test_load_tushare_staging_rows_reads_duckdb_and_rejects_synthetic_sources(
+    marker: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -399,12 +550,13 @@ def test_load_tushare_staging_rows_reads_duckdb_and_rejects_synthetic_sources(
         connection = duckdb.connect(str(db_path))
         try:
             connection.execute(
-                "UPDATE stg_daily SET source_run_id = 'ENT_P2_A' WHERE ts_code = '600519.SH'"
+                "UPDATE stg_daily SET source_run_id = ? WHERE ts_code = '600519.SH'",
+                [marker],
             )
         finally:
             connection.close()
 
-        with pytest.raises(ValueError, match="ENT_P2"):
+        with pytest.raises(ValueError, match="synthetic|ENT_P2"):
             p2_dry_run._load_tushare_staging_rows(
                 cycle_date=date(2026, 4, 16),
                 symbols=("600519.SH",),
@@ -871,4 +1023,48 @@ def _evidence(layer: str) -> object:
         audit_record_id=f"audit-cycle-20260416-{layer_slug}-object",
         replay_record_id=f"replay-cycle-20260416-{layer_slug}-object",
         called_llm=False,
+    )
+
+
+def _sample_p2_audit_write_bundle(
+    *,
+    dagster_run_id: str = "dagster-run-CYCLE_20260416",
+) -> object:
+    from orchestrator_adapters.p2_dry_run import _build_audit_write_bundle
+
+    cycle_id = "CYCLE_20260416"
+    evidence = tuple(
+        _sample_p2_layer_evidence(cycle_id=cycle_id, layer=layer)
+        for layer in ("L4", "L6", "L7", "L8")
+    )
+    committed_objects = (
+        SimpleNamespace(
+            object_key="recommendation_snapshot",
+            ref="data-platform://formal/recommendation_snapshot/snapshots/1001",
+        ),
+    )
+    return _build_audit_write_bundle(
+        cycle_id=cycle_id,
+        evidence=evidence,
+        committed_objects=committed_objects,
+        dagster_run_id=dagster_run_id,
+    )
+
+
+def _sample_p2_layer_evidence(*, cycle_id: str, layer: str) -> object:
+    from orchestrator_adapters.p2_dry_run import P2LayerEvidence
+
+    sanitized_input = json.dumps({"cycle_id": cycle_id, "layer": layer}, sort_keys=True)
+    raw_output = json.dumps({"ok": True, "layer": layer}, sort_keys=True)
+    return P2LayerEvidence(
+        layer=layer,
+        object_ref=f"{layer.lower()}_formal_object",
+        audit_record_id=f"audit-{cycle_id.lower()}-{layer.lower()}-formal-object",
+        replay_record_id=f"replay-{cycle_id.lower()}-{layer.lower()}-formal-object",
+        called_llm=layer in {"L4", "L6"},
+        input_hash=hashlib.sha256(sanitized_input.encode()).hexdigest(),
+        output_hash=hashlib.sha256(raw_output.encode()).hexdigest(),
+        sanitized_input=sanitized_input,
+        raw_output=raw_output,
+        parsed_result={"ok": True, "layer": layer},
     )

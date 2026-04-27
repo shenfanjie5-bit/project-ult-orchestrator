@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 import hashlib
 import json
 import os
@@ -1055,7 +1055,8 @@ def _build_audit_write_bundle(
     if not formal_snapshot_refs:
         raise ValueError("P2 audit/replay binding requires committed formal refs")
 
-    created_at = datetime.now(UTC)
+    created_at = _stable_audit_bundle_timestamp(cycle_id=cycle_id)
+    replay_run_id = _stable_replay_run_id(cycle_id)
     required = _required_layer_evidence(evidence)
     audit_records = [
         AuditRecord(
@@ -1089,7 +1090,7 @@ def _build_audit_write_bundle(
             manifest_cycle_id=cycle_id,
             formal_snapshot_refs=formal_snapshot_refs,
             graph_snapshot_ref=None,
-            dagster_run_id=dagster_run_id,
+            dagster_run_id=replay_run_id,
             created_at=created_at,
         )
         for item in required
@@ -1103,6 +1104,8 @@ def _build_audit_write_bundle(
         metadata={
             "source_kind": _SOURCE_KIND,
             "source_layer": _SOURCE_LAYER,
+            "dagster_run_id": dagster_run_id,
+            "replay_run_id": replay_run_id,
         },
     )
 
@@ -1117,6 +1120,20 @@ def _llm_lineage_for_evidence(item: P2LayerEvidence) -> dict[str, object]:
             }
         )
     return lineage
+
+
+def _stable_audit_bundle_timestamp(*, cycle_id: str) -> datetime:
+    """Return a retry-stable timestamp for audit/replay bundle payloads."""
+
+    digest = hashlib.sha256(f"{cycle_id}:p2-audit-bundle".encode()).hexdigest()
+    second_offset = int(digest[:8], 16) % 86_400
+    return datetime.combine(_cycle_date(cycle_id), time.min, tzinfo=UTC) + timedelta(
+        seconds=second_offset,
+    )
+
+
+def _stable_replay_run_id(cycle_id: str) -> str:
+    return f"orchestrator-p2-current-cycle:{cycle_id}"
 
 
 def _non_llm_evidence(cycle_id: str, layer: str, object_key: str) -> P2LayerEvidence:

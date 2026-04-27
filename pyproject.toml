@@ -23,8 +23,12 @@ dependencies = [
 dev = [
     "dbt-core",
     "dbt-duckdb",
+    "duckdb>=1.0,<2",
     "pytest",
     "pytest-asyncio",
+    "pyarrow>=15,<30",
+    "pydantic-settings>=2,<3",
+    "sqlalchemy>=2.0,<3",
     "mypy",
 ]
 # Cross-repo schema source-of-truth pin (iron rule #6 + main-core
@@ -53,5 +57,12 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
-pythonpath = ["src"]
+pythonpath = [
+    "src",
+    "../main-core/src",
+    "../reasoner-runtime",
+    "../contracts/src",
+    "../data-platform/src",
+    "../audit-eval/src",
+]
 testpaths = ["tests"]
