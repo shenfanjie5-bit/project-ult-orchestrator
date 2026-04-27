@@ -47,7 +47,7 @@ def test_phase2_provider_contributes_daily_cycle_assets_and_checks(
     assert phase2_asset_keys <= selected_keys
     assert _asset_keys_for_group(defs, PHASE2_GROUP_NAME) == phase2_asset_keys
     assert "phase2_pool_failure_rate_gate" in _check_names(defs)
-    assert "fake_phase2_l7_pure_check" in _check_names(defs)
+    assert "fake_phase2_l8_pure_check" in _check_names(defs)
 
     result = defs.get_job_def("daily_cycle_job").execute_in_process(
         instance=dagster_instance,
@@ -60,7 +60,7 @@ def test_phase2_provider_contributes_daily_cycle_assets_and_checks(
     assert phase2_asset_keys <= materialized_keys
     assert phase2_calls == list(PHASE2_STAGE_KEYS)
     assert any(
-        _check_name(evaluation) == "fake_phase2_l7_pure_check"
+        _check_name(evaluation) == "fake_phase2_l8_pure_check"
         and getattr(evaluation, "passed", None) is True
         for evaluation in evaluations
     )
@@ -264,11 +264,16 @@ def _fake_phase2_provider(
         calls.append(PHASE2_STAGE_KEYS[6])
         return f"{l6}:l7"
 
+    @dagster.asset(name=PHASE2_STAGE_KEYS[7], group_name=PHASE2_GROUP_NAME)
+    def phase2_l8(l7: str) -> str:
+        calls.append(PHASE2_STAGE_KEYS[7])
+        return f"{l7}:l8"
+
     @dagster.asset_check(
-        asset=phase2_l7,
-        name="fake_phase2_l7_pure_check",
+        asset=phase2_l8,
+        name="fake_phase2_l8_pure_check",
     )
-    def fake_phase2_l7_pure_check() -> object:
+    def fake_phase2_l8_pure_check() -> object:
         return dagster.AssetCheckResult(passed=True)
 
     phase2_assets = (
@@ -279,6 +284,7 @@ def _fake_phase2_provider(
         phase2_l5,
         phase2_l6,
         phase2_l7,
+        phase2_l8,
     )
 
     class FakePhase2PoolFailureRateResource(dagster.ConfigurableResource):
@@ -296,7 +302,7 @@ def _fake_phase2_provider(
             return phase2_assets
 
         def get_checks(self) -> tuple[object, ...]:
-            return (fake_phase2_l7_pure_check,)
+            return (fake_phase2_l8_pure_check,)
 
         def get_resources(self) -> dict[str, object]:
             return {
@@ -305,7 +311,7 @@ def _fake_phase2_provider(
                 ),
             }
 
-    return FakePhase2Provider(), phase2_assets, fake_phase2_l7_pure_check
+    return FakePhase2Provider(), phase2_assets, fake_phase2_l8_pure_check
 
 
 def _asset_keys_for_group(defs: Any, group_name: str) -> set[object]:

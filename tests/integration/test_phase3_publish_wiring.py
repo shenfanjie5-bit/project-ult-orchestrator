@@ -335,8 +335,8 @@ def _fake_phase2_provider(dagster: Any) -> object:
     from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME, PHASE2_STAGE_KEYS
 
     @dagster.asset(name=PHASE2_STAGE_KEYS[-1], group_name=PHASE2_GROUP_NAME)
-    def phase2_l7(graph_snapshot: str) -> str:
-        return f"{graph_snapshot}:l7"
+    def phase2_l8(graph_snapshot: str) -> str:
+        return f"{graph_snapshot}:l8"
 
     class FakePhase2PoolFailureRateResource(dagster.ConfigurableResource):
         def get_phase2_pool_failure_rate_event(
@@ -350,7 +350,7 @@ def _fake_phase2_provider(dagster: Any) -> object:
 
     class FakePhase2Provider:
         def get_assets(self) -> tuple[object, ...]:
-            return (phase2_l7,)
+            return (phase2_l8,)
 
         def get_checks(self) -> tuple[object, ...]:
             return ()
@@ -386,8 +386,8 @@ def _fake_phase3_provider(
             name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
             group_name=PHASE3_GROUP_NAME,
         )
-        def formal_objects_commit(l7: str) -> str:
-            assert l7
+        def formal_objects_commit(l8: str) -> str:
+            assert l8
             phase3_calls.append(PHASE3_FORMAL_COMMIT_ASSET_KEY)
             if fail_commit:
                 raise RuntimeError("fake formal commit failed")

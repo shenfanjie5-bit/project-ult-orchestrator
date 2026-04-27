@@ -128,7 +128,7 @@ def test_daily_cycle_schedule_triggers_four_phase_minimal_closure(
         "llm_health_check",
         "neo4j_graph_consistency_check",
         "fake_phase1_graph_snapshot_pure_check",
-        "fake_phase2_l7_pure_check",
+        "fake_phase2_l8_pure_check",
         "fake_phase3_manifest_pure_check",
     } <= evaluation_names
 
@@ -309,16 +309,20 @@ def fake_main_core_provider(dagster: Any) -> AssetFactoryProvider:
     def phase2_l7(l6: str) -> str:
         return f"{l6}:l7"
 
-    @dagster.asset_check(asset=phase2_l7, name="fake_phase2_l7_pure_check")
-    def fake_phase2_l7_pure_check() -> object:
+    @dagster.asset(name=PHASE2_STAGE_KEYS[7], group_name=PHASE2_GROUP_NAME)
+    def phase2_l8(l7: str) -> str:
+        return f"{l7}:l8"
+
+    @dagster.asset_check(asset=phase2_l8, name="fake_phase2_l8_pure_check")
+    def fake_phase2_l8_pure_check() -> object:
         return dagster.AssetCheckResult(passed=True)
 
     @dagster.asset(
         name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
         group_name=PHASE3_GROUP_NAME,
     )
-    def formal_objects_commit(l7: str) -> str:
-        return f"{l7}:formal"
+    def formal_objects_commit(l8: str) -> str:
+        return f"{l8}:formal"
 
     @dagster.asset(
         name=PHASE3_MANIFEST_ASSET_KEY,
@@ -342,6 +346,7 @@ def fake_main_core_provider(dagster: Any) -> AssetFactoryProvider:
         phase2_l5,
         phase2_l6,
         phase2_l7,
+        phase2_l8,
     )
 
     class FakePhase2PoolFailureRateResource(dagster.ConfigurableResource):
@@ -364,7 +369,7 @@ def fake_main_core_provider(dagster: Any) -> AssetFactoryProvider:
 
         def get_checks(self) -> tuple[object, ...]:
             return (
-                fake_phase2_l7_pure_check,
+                fake_phase2_l8_pure_check,
                 fake_phase3_manifest_pure_check,
             )
 

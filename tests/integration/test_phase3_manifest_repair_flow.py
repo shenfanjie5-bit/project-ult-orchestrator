@@ -79,15 +79,15 @@ def test_daily_cycle_manifest_failure_hook_writes_repair_only_request(
         return f"{graph_promotion}:snapshot"
 
     @dagster.asset(name=PHASE2_STAGE_KEYS[-1], group_name=PHASE2_GROUP_NAME)
-    def phase2_l7(graph_snapshot: str) -> str:
-        return f"{graph_snapshot}:l7"
+    def phase2_l8(graph_snapshot: str) -> str:
+        return f"{graph_snapshot}:l8"
 
     @dagster.asset(
         name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
         group_name=PHASE3_GROUP_NAME,
     )
-    def formal_objects_commit(l7: str) -> str:
-        assert l7
+    def formal_objects_commit(l8: str) -> str:
+        assert l8
         calls.append(PHASE3_FORMAL_COMMIT_ASSET_KEY)
         return "formal-commit-ok"
 
@@ -107,7 +107,7 @@ def test_daily_cycle_manifest_failure_hook_writes_repair_only_request(
             graph_status,
             graph_promotion,
             graph_snapshot,
-            phase2_l7,
+            phase2_l8,
             formal_objects_commit,
             cycle_publish_manifest,
         ],

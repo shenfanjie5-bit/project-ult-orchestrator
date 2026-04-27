@@ -373,13 +373,18 @@ class TemporalParityFakeProvider:
             owner._mark_phase(PhaseEnum.PHASE2)
             return f"{l6}:l7"
 
+        @dagster.asset(name=PHASE2_STAGE_KEYS[7], group_name=PHASE2_GROUP_NAME)
+        def l8(l7: str) -> str:
+            owner._mark_phase(PhaseEnum.PHASE2)
+            return f"{l7}:l8"
+
         @dagster.asset(
             name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
             group_name=PHASE3_GROUP_NAME,
         )
-        def formal_objects_commit(l7: str) -> str:
+        def formal_objects_commit(l8: str) -> str:
             owner._mark_phase(PhaseEnum.PHASE3)
-            return f"{l7}:formal"
+            return f"{l8}:formal"
 
         @dagster.asset(
             name=PHASE3_MANIFEST_ASSET_KEY,
@@ -416,6 +421,7 @@ class TemporalParityFakeProvider:
             l5,
             l6,
             l7,
+            l8,
             formal_objects_commit,
             cycle_publish_manifest,
             retrospective_hook,
@@ -427,7 +433,7 @@ class TemporalParityFakeProvider:
         candidate_freeze = assets[PHASE0_CANDIDATE_FREEZE_ASSET_KEY]
         graph_status = assets[PHASE0_GRAPH_STATUS_ASSET_KEY]
         graph_snapshot = assets[PHASE1_GRAPH_SNAPSHOT_ASSET_KEY]
-        l7 = assets[PHASE2_STAGE_KEYS[-1]]
+        l8 = assets[PHASE2_STAGE_KEYS[-1]]
         formal_objects_commit = assets[PHASE3_FORMAL_COMMIT_ASSET_KEY]
         cycle_publish_manifest = assets[PHASE3_MANIFEST_ASSET_KEY]
         retrospective_hook = assets[RETROSPECTIVE_HOOK_ASSET_KEY]
@@ -607,8 +613,8 @@ class TemporalParityFakeProvider:
         def fake_phase1_graph_snapshot_pure_check() -> object:
             return dagster.AssetCheckResult(passed=True)
 
-        @dagster.asset_check(asset=l7, name="fake_phase2_l7_pure_check")
-        def fake_phase2_l7_pure_check() -> object:
+        @dagster.asset_check(asset=l8, name="fake_phase2_l8_pure_check")
+        def fake_phase2_l8_pure_check() -> object:
             return dagster.AssetCheckResult(passed=True)
 
         @dagster.asset_check(
@@ -632,7 +638,7 @@ class TemporalParityFakeProvider:
             phase3_formal_commit_gate,
             phase3_infra_hard_stop_gate,
             fake_phase1_graph_snapshot_pure_check,
-            fake_phase2_l7_pure_check,
+            fake_phase2_l8_pure_check,
             fake_phase3_manifest_pure_check,
             fake_audit_eval_check,
         )

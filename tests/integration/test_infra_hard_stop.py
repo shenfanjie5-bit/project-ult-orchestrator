@@ -379,9 +379,13 @@ def _fake_phase2_provider(dagster: Any, failing_resource_key: str) -> object:
     def phase2_l7(l6: str) -> str:
         return f"{l6}:l7"
 
+    @dagster.asset(name=PHASE2_STAGE_KEYS[7], group_name=PHASE2_GROUP_NAME)
+    def phase2_l8(l7: str) -> str:
+        return f"{l7}:l8"
+
     @dagster.asset(name=_DOWNSTREAM_PUBLISH_ASSET_KEY, group_name=PHASE2_GROUP_NAME)
-    def phase2_downstream_publish(l7: str) -> str:
-        return f"{l7}:published"
+    def phase2_downstream_publish(l8: str) -> str:
+        return f"{l8}:published"
 
     class RaisingResource(dagster.ConfigurableResource):
         def create_resource(self, context: object) -> object:
@@ -408,6 +412,7 @@ def _fake_phase2_provider(dagster: Any, failing_resource_key: str) -> object:
         phase2_l5,
         phase2_l6,
         phase2_l7,
+        phase2_l8,
         phase2_downstream_publish,
     )
 

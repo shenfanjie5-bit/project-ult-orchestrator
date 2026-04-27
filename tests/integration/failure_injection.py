@@ -946,15 +946,15 @@ def _run_phase3_formal_commit_failure(
     phase1_assets = _phase1_snapshot_direct_assets(dagster)
 
     @dagster.asset(name=PHASE2_STAGE_KEYS[-1], group_name=PHASE2_GROUP_NAME)
-    def phase2_l7(graph_snapshot: str) -> str:
-        return f"{graph_snapshot}:l7"
+    def phase2_l8(graph_snapshot: str) -> str:
+        return f"{graph_snapshot}:l8"
 
     @dagster.asset(
         name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
         group_name=PHASE3_GROUP_NAME,
     )
-    def formal_objects_commit(l7: str) -> str:
-        return f"{l7}:formal-commit"
+    def formal_objects_commit(l8: str) -> str:
+        return f"{l8}:formal-commit"
 
     @dagster.asset_check(
         asset=formal_objects_commit,
@@ -1001,7 +1001,7 @@ def _run_phase3_formal_commit_failure(
         assets=[
             *phase0_assets,
             *phase1_assets,
-            phase2_l7,
+            phase2_l8,
             formal_objects_commit,
             cycle_publish_manifest,
         ],
@@ -1065,15 +1065,15 @@ def _run_phase3_manifest_repair_failure(
     phase1_assets = _phase1_snapshot_direct_assets(dagster)
 
     @dagster.asset(name=PHASE2_STAGE_KEYS[-1], group_name=PHASE2_GROUP_NAME)
-    def phase2_l7(graph_snapshot: str) -> str:
-        return f"{graph_snapshot}:l7"
+    def phase2_l8(graph_snapshot: str) -> str:
+        return f"{graph_snapshot}:l8"
 
     @dagster.asset(
         name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
         group_name=PHASE3_GROUP_NAME,
     )
-    def formal_objects_commit(l7: str) -> str:
-        return f"{l7}:formal-commit"
+    def formal_objects_commit(l8: str) -> str:
+        return f"{l8}:formal-commit"
 
     @dagster.asset(
         name=PHASE3_MANIFEST_ASSET_KEY,
@@ -1086,7 +1086,7 @@ def _run_phase3_manifest_repair_failure(
         assets=[
             *phase0_assets,
             *phase1_assets,
-            phase2_l7,
+            phase2_l8,
             formal_objects_commit,
             cycle_publish_manifest,
         ],
@@ -1256,6 +1256,10 @@ def _phase2_stage_assets(dagster: Any) -> tuple[object, ...]:
     def phase2_l7(l6: str) -> str:
         return f"{l6}:l7"
 
+    @dagster.asset(name=PHASE2_STAGE_KEYS[7], group_name=PHASE2_GROUP_NAME)
+    def phase2_l8(l7: str) -> str:
+        return f"{l7}:l8"
+
     return (
         phase2_l1,
         phase2_l2,
@@ -1264,6 +1268,7 @@ def _phase2_stage_assets(dagster: Any) -> tuple[object, ...]:
         phase2_l5,
         phase2_l6,
         phase2_l7,
+        phase2_l8,
     )
 
 
@@ -1272,8 +1277,8 @@ def _phase2_downstream_publish_asset(dagster: Any) -> object:
         name=PHASE2_DOWNSTREAM_PUBLISH_ASSET_KEY,
         group_name=PHASE2_GROUP_NAME,
     )
-    def phase2_downstream_publish(l7: str) -> str:
-        return f"{l7}:published"
+    def phase2_downstream_publish(l8: str) -> str:
+        return f"{l8}:published"
 
     return phase2_downstream_publish
 

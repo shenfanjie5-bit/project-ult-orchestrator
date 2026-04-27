@@ -286,8 +286,8 @@ def _fake_phase3_manifest_failure_provider(
         name=PHASE3_FORMAL_COMMIT_ASSET_KEY,
         group_name=PHASE3_GROUP_NAME,
     )
-    def formal_objects_commit(l7: str) -> str:
-        assert l7
+    def formal_objects_commit(l8: str) -> str:
+        assert l8
         phase3_calls.append(PHASE3_FORMAL_COMMIT_ASSET_KEY)
         return "formal-commit-ok"
 
