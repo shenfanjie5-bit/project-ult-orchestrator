@@ -111,13 +111,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     #
     # Distinction: this is "Phase 0-3 assembly on the minimal fixture",
     # NOT "Phase 0-3 execution".
-    artifacts = _emit_runtime_artifacts(
-        run_artifacts_dir=run_artifacts_dir,
-        required_artifacts=required_artifacts,
-        scenario_id=manifest.get("scenario_id", "unknown"),
-        profile_id=profile_id,
-        expected_phases=expected_phases,
-    )
+    try:
+        artifacts = _emit_runtime_artifacts(
+            run_artifacts_dir=run_artifacts_dir,
+            required_artifacts=required_artifacts,
+            scenario_id=manifest.get("scenario_id", "unknown"),
+            profile_id=profile_id,
+            expected_phases=expected_phases,
+        )
+    except MinCycleError as exc:
+        _write_failure_report(report_path, profile_id, str(exc), phases=expected_phases)
+        return 1
 
     _write_success_report(
         report_path=report_path,
@@ -296,7 +300,8 @@ def _emit_runtime_artifacts(
 
     artifacts: dict[str, str] = {}
     for kind in required_artifacts:
-        path = run_artifacts_dir / f"{kind}.json"
+        relative_path, path = _required_artifact_output_path(run_artifacts_dir, kind)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
                 {
@@ -326,8 +331,44 @@ def _emit_runtime_artifacts(
         # filename — exactly the contract assembly's
         # ``assert_required_artifacts`` and ``assert_artifact_payload_
         # invariants`` resolve from ``base_dir / artifact_path``.
-        artifacts[kind] = path.name
+        artifacts[kind] = relative_path.as_posix()
     return artifacts
+
+
+def _required_artifact_output_path(
+    run_artifacts_dir: Path,
+    kind: object,
+) -> tuple[Path, Path]:
+    """Return the relative and absolute output paths for a required artifact."""
+    if not isinstance(kind, str):
+        raise MinCycleError(f"required_artifacts entries must be strings: {kind!r}")
+    if not kind or kind != kind.strip():
+        raise MinCycleError(
+            f"required_artifacts entry must be a non-empty relative path: {kind!r}"
+        )
+    if "\\" in kind or kind.endswith("/"):
+        raise MinCycleError(
+            f"required_artifacts entry must be a relative POSIX path: {kind!r}"
+        )
+
+    requested_path = Path(kind)
+    if requested_path.is_absolute() or any(
+        part in {"", ".", ".."} for part in requested_path.parts
+    ):
+        raise MinCycleError(f"required_artifacts entry escapes artifact root: {kind!r}")
+    if not requested_path.name:
+        raise MinCycleError(f"required_artifacts entry must name an artifact file: {kind!r}")
+
+    relative_path = requested_path.with_name(f"{requested_path.name}.json")
+    root = run_artifacts_dir.expanduser().resolve(strict=True)
+    path = run_artifacts_dir / relative_path
+    try:
+        path.expanduser().resolve(strict=False).relative_to(root)
+    except ValueError as exc:
+        raise MinCycleError(f"required artifact path escapes artifact root: {kind!r}") from exc
+    if path.exists() and not path.is_file():
+        raise MinCycleError(f"required artifact path must be a file: {kind!r}")
+    return relative_path, path
 
 
 def _write_success_report(

@@ -143,7 +143,7 @@ class TestRuntimeMinCycleAssemblesArtifactsForFixture:
             report = json.loads(report_path.read_text())
             assert report["status"] == "success"
 
-            artifact_path = Path(report["artifacts"]["cycle_summary"])
+            artifact_path = run_dir / Path(report["artifacts"]["cycle_summary"])
             payload = json.loads(artifact_path.read_text())
 
             # Real-phase-execution contract.
@@ -191,7 +191,7 @@ class TestRuntimeMinCycleAssemblesArtifactsForFixture:
             )
             assert rc == 0
             report = json.loads(report_path.read_text())
-            artifact_path = Path(report["artifacts"]["cycle_summary"])
+            artifact_path = run_dir / Path(report["artifacts"]["cycle_summary"])
             payload = json.loads(artifact_path.read_text())
             observed_ids.append(payload["cycle_publish_manifest_id"])
 

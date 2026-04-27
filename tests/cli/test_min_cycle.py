@@ -65,6 +65,16 @@ def _build_argv(*, fixture: Path, run_dir: Path, report: Path) -> list[str]:
     ]
 
 
+def _stub_successful_assembly(monkeypatch: pytest.MonkeyPatch) -> None:
+    from orchestrator.cli import min_cycle as min_cycle_module
+
+    monkeypatch.setattr(
+        min_cycle_module,
+        "_try_assemble_dagster_jobs",
+        lambda: (["daily_cycle_job"], None),
+    )
+
+
 class TestArgvContract:
     def test_min_cycle_main_succeeds_on_valid_manifest(self, tmp_path: Path) -> None:
         manifest = _write_minimal_cycle_manifest(tmp_path / "manifest.yaml")
@@ -186,12 +196,13 @@ class TestReportSchema:
             tmp_path / "manifest.yaml",
             required_artifacts=["cycle_summary", "extra_artifact"],
         )
+        run_dir = tmp_path / "run"
         report_path = tmp_path / "report.json"
 
         min_cycle_main(
             _build_argv(
                 fixture=manifest,
-                run_dir=tmp_path / "run",
+                run_dir=run_dir,
                 report=report_path,
             )
         )
@@ -199,7 +210,115 @@ class TestReportSchema:
         report = json.loads(report_path.read_text())
         assert set(report["artifacts"].keys()) == {"cycle_summary", "extra_artifact"}
         for path_str in report["artifacts"].values():
-            assert Path(path_str).is_file()
+            artifact_path = Path(path_str)
+            assert not artifact_path.is_absolute()
+            assert (run_dir / artifact_path).is_file()
+
+    def test_success_report_preserves_safe_relative_artifact_paths(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _stub_successful_assembly(monkeypatch)
+        manifest = _write_minimal_cycle_manifest(
+            tmp_path / "manifest.yaml",
+            required_artifacts=["nested/cycle_summary"],
+        )
+        run_dir = tmp_path / "run"
+        report_path = tmp_path / "report.json"
+
+        rc = min_cycle_main(
+            _build_argv(fixture=manifest, run_dir=run_dir, report=report_path)
+        )
+
+        assert rc == 0
+        report = json.loads(report_path.read_text())
+        relative_path = Path(report["artifacts"]["nested/cycle_summary"])
+        assert relative_path == Path("nested/cycle_summary.json")
+        assert not relative_path.is_absolute()
+        assert (run_dir / relative_path).is_file()
+
+    @pytest.mark.parametrize(
+        "artifact_name",
+        ["", "../escape", "nested/../escape", "/tmp/escape", "nested/"],
+    )
+    def test_required_artifacts_reject_path_escape_or_empty_names(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        artifact_name: str,
+    ) -> None:
+        _stub_successful_assembly(monkeypatch)
+        manifest = _write_minimal_cycle_manifest(
+            tmp_path / "manifest.yaml",
+            required_artifacts=[artifact_name],
+        )
+        report_path = tmp_path / "report.json"
+
+        rc = min_cycle_main(
+            _build_argv(
+                fixture=manifest,
+                run_dir=tmp_path / "run",
+                report=report_path,
+            )
+        )
+
+        assert rc == 1
+        report = json.loads(report_path.read_text())
+        assert report["status"] == "failed"
+        assert "required_artifacts" in report["failure_reason"]
+
+    def test_required_artifacts_reject_symlink_escape(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _stub_successful_assembly(monkeypatch)
+        manifest = _write_minimal_cycle_manifest(
+            tmp_path / "manifest.yaml",
+            required_artifacts=["cycle_summary"],
+        )
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_target = outside / "cycle_summary.json"
+        outside_target.write_text("outside", encoding="utf-8")
+        (run_dir / "cycle_summary.json").symlink_to(outside_target)
+        report_path = tmp_path / "report.json"
+
+        rc = min_cycle_main(
+            _build_argv(fixture=manifest, run_dir=run_dir, report=report_path)
+        )
+
+        assert rc == 1
+        assert outside_target.read_text(encoding="utf-8") == "outside"
+        report = json.loads(report_path.read_text())
+        assert report["status"] == "failed"
+        assert "escapes artifact root" in report["failure_reason"]
+
+    def test_required_artifacts_reject_non_file_target(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _stub_successful_assembly(monkeypatch)
+        manifest = _write_minimal_cycle_manifest(
+            tmp_path / "manifest.yaml",
+            required_artifacts=["cycle_summary"],
+        )
+        run_dir = tmp_path / "run"
+        (run_dir / "cycle_summary.json").mkdir(parents=True)
+        report_path = tmp_path / "report.json"
+
+        rc = min_cycle_main(
+            _build_argv(fixture=manifest, run_dir=run_dir, report=report_path)
+        )
+
+        assert rc == 1
+        report = json.loads(report_path.read_text())
+        assert report["status"] == "failed"
+        assert "must be a file" in report["failure_reason"]
 
     def test_failure_report_emitted_on_missing_manifest(self, tmp_path: Path) -> None:
         report_path = tmp_path / "report.json"
@@ -314,7 +433,7 @@ class TestRealPhaseExecution:
         )
 
         report = json.loads(report_path.read_text())
-        artifact_path = Path(report["artifacts"]["cycle_summary"])
+        artifact_path = run_dir / Path(report["artifacts"]["cycle_summary"])
         payload = json.loads(artifact_path.read_text())
         # Codex stage 2.5 review #1 fix: real_phase_execution is now
         # observed-not-asserted. In a dev venv (dagster present) this
@@ -368,7 +487,7 @@ class TestRealPhaseExecution:
         assert rc == 0
 
         report = json.loads(report_path.read_text())
-        artifact_path = Path(report["artifacts"]["cycle_summary"])
+        artifact_path = run_dir / Path(report["artifacts"]["cycle_summary"])
         payload = json.loads(artifact_path.read_text())
         assert payload["real_phase_execution"] is False
         assert payload["assembled_job_names"] == []
@@ -390,7 +509,7 @@ class TestRealPhaseExecution:
         )
 
         report = json.loads(report_path.read_text())
-        artifact_path = Path(report["artifacts"]["cycle_summary"])
+        artifact_path = run_dir / Path(report["artifacts"]["cycle_summary"])
         payload = json.loads(artifact_path.read_text())
         manifest_id = payload["cycle_publish_manifest_id"]
         assert isinstance(manifest_id, str) and manifest_id, (
@@ -417,7 +536,7 @@ class TestRealPhaseExecution:
         )
 
         report = json.loads(report_path.read_text())
-        artifact_path = Path(report["artifacts"]["cycle_summary"])
+        artifact_path = run_dir / Path(report["artifacts"]["cycle_summary"])
         payload = json.loads(artifact_path.read_text())
         assert payload["phases_executed"] == custom_phases
 
