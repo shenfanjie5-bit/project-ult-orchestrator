@@ -22,6 +22,7 @@ _SOURCE_LAYER = "L8"
 _RECOMMENDATION_OBJECT_KEY = "recommendation_snapshot"
 _REQUIRED_RECOMMENDATION_LAYERS = frozenset({"L4", "L6", "L7", "L8"})
 _FORBIDDEN_PROVENANCE_MARKERS = ("smoke", "fixture", "historical")
+_FORBIDDEN_INPUT_MARKERS = (*_FORBIDDEN_PROVENANCE_MARKERS, "synthetic", "ent_p2")
 _INPUT_TABLE_DAILY = "main.stg_daily"
 _INPUT_TABLE_STOCK_BASIC = "main.stg_stock_basic"
 
@@ -429,8 +430,7 @@ class AuditEvalPersistencePort:
     def persist(self, write_bundle: object) -> P2PersistedAuditRecords:
         from audit_eval.audit import (
             get_default_storage_adapter,
-            persist_audit_records,
-            persist_replay_records,
+            persist_audit_write_bundle,
         )
 
         storage = (
@@ -438,8 +438,12 @@ class AuditEvalPersistencePort:
             if self._storage_factory is not None
             else get_default_storage_adapter()
         )
-        audit_record_ids = tuple(persist_audit_records(cast(Any, write_bundle), storage))
-        replay_record_ids = tuple(persist_replay_records(cast(Any, write_bundle), storage))
+        audit_record_ids, replay_record_ids = persist_audit_write_bundle(
+            cast(Any, write_bundle),
+            storage,
+        )
+        audit_record_ids = tuple(audit_record_ids)
+        replay_record_ids = tuple(replay_record_ids)
         _assert_persisted_bundle_ids(
             write_bundle=write_bundle,
             audit_record_ids=audit_record_ids,
@@ -1279,10 +1283,10 @@ def _reject_non_current_cycle_id(cycle_id: str) -> None:
 
 def _reject_forbidden_input_marker(value: str, field_name: str) -> None:
     lowered = value.lower()
-    if any(marker in lowered for marker in (*_FORBIDDEN_PROVENANCE_MARKERS, "synthetic")):
+    if any(marker in lowered for marker in _FORBIDDEN_INPUT_MARKERS):
         raise ValueError(
             f"P2 current-cycle input {field_name} must not contain "
-            "smoke, fixture, historical, or synthetic markers"
+            "smoke, fixture, historical, synthetic, or ENT_P2 markers"
         )
 
 

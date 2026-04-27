@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 import pytest
@@ -269,6 +271,148 @@ def test_p2_provenance_rejects_missing_or_forbidden_audit_replay_ids(
         forbidden_state.recommendation_provenance(14)
 
 
+def test_audit_eval_persistence_port_uses_retry_safe_bundle_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import audit_eval.audit as audit_module
+    from orchestrator_adapters.p2_dry_run import AuditEvalPersistencePort
+
+    storage = object()
+    write_bundle = SimpleNamespace(
+        audit_records=[SimpleNamespace(record_id="audit-current-cycle-l8")],
+        replay_records=[SimpleNamespace(replay_id="replay-current-cycle-l8")],
+    )
+    calls: list[tuple[object, object]] = []
+
+    def persist_bundle(write_bundle_arg: object, storage_arg: object) -> tuple[list[str], list[str]]:
+        calls.append((write_bundle_arg, storage_arg))
+        return ["audit-current-cycle-l8"], ["replay-current-cycle-l8"]
+
+    monkeypatch.setattr(audit_module, "persist_audit_write_bundle", persist_bundle)
+
+    result = AuditEvalPersistencePort(storage_factory=lambda: storage).persist(write_bundle)
+
+    assert calls == [(write_bundle, storage)]
+    assert result.audit_record_ids == ("audit-current-cycle-l8",)
+    assert result.replay_record_ids == ("replay-current-cycle-l8",)
+
+
+def test_data_platform_tushare_provider_loads_current_cycle_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator_adapters import p2_dry_run
+
+    def fake_candidates(cycle_id: str) -> tuple[dict[str, object], ...]:
+        assert cycle_id == "CYCLE_20260416"
+        return (
+            {"candidate_id": 10, "ts_code": "600519.SH", "submitted_by": "candidate-freeze"},
+            {"candidate_id": 11, "ts_code": "000001.SZ", "submitted_by": "candidate-freeze"},
+        )
+
+    def fake_rows(
+        *,
+        cycle_date: date,
+        symbols: Sequence[str],
+    ) -> tuple[dict[str, object], ...]:
+        assert cycle_date == date(2026, 4, 16)
+        assert tuple(symbols) == ("600519.SH", "000001.SZ")
+        return (
+            _tushare_staging_row("000001.SZ", -0.4),
+            _tushare_staging_row("600519.SH", 1.2),
+        )
+
+    monkeypatch.setattr(p2_dry_run, "_load_frozen_candidate_symbols", fake_candidates)
+    monkeypatch.setattr(p2_dry_run, "_load_tushare_staging_rows", fake_rows)
+
+    inputs = p2_dry_run.DataPlatformTushareCurrentCycleInputProvider().load_current_cycle_inputs(
+        cycle_id="CYCLE_20260416",
+        graph_snapshot="graph://snapshot/current",
+    )
+
+    assert [bundle.entity_id for bundle in inputs.feature_bundles] == [
+        "600519.SH",
+        "000001.SZ",
+    ]
+    assert inputs.evidence["candidate_ids"] == [10, 11]
+    assert inputs.evidence["symbols"] == ["600519.SH", "000001.SZ"]
+    assert inputs.evidence["input_tables"] == ["main.stg_daily", "main.stg_stock_basic"]
+    assert inputs.evidence["source_run_ids"] == [
+        "daily-run-000001.SZ",
+        "daily-run-600519.SH",
+        "stock-basic-run-000001.SZ",
+        "stock-basic-run-600519.SH",
+    ]
+    assert inputs.evidence["raw_loaded_at"] == [
+        "2026-04-16 16:00:00",
+        "2026-04-16 16:01:00",
+    ]
+    assert inputs.evidence["source"] == "data-platform:tushare-staging:frozen-candidates"
+
+
+def test_load_frozen_candidate_symbols_rejects_ent_p2_synthetic_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from data_platform.cycle import repository
+    from orchestrator_adapters import p2_dry_run
+
+    rows = [
+        {
+            "candidate_id": 1,
+            "payload": json.dumps({"ts_code": "ENT_P2_A"}),
+            "submitted_by": "candidate-freeze",
+        }
+    ]
+    monkeypatch.setattr(repository, "_create_engine", lambda: _FakeEngine(rows))
+
+    with pytest.raises(ValueError, match="ENT_P2"):
+        p2_dry_run._load_frozen_candidate_symbols("CYCLE_20260416")
+
+
+def test_load_tushare_staging_rows_reads_duckdb_and_rejects_synthetic_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    duckdb = pytest.importorskip("duckdb")
+    from data_platform.config import reset_settings_cache
+    from orchestrator_adapters import p2_dry_run
+
+    db_path = tmp_path / "data_platform.duckdb"
+    connection = duckdb.connect(str(db_path))
+    try:
+        _seed_tushare_staging_tables(connection)
+    finally:
+        connection.close()
+
+    monkeypatch.setenv("DP_PG_DSN", "postgresql://user@localhost:5432/proj")
+    monkeypatch.setenv("DP_RAW_ZONE_PATH", str(tmp_path / "raw"))
+    monkeypatch.setenv("DP_ICEBERG_WAREHOUSE_PATH", str(tmp_path / "warehouse"))
+    monkeypatch.setenv("DP_DUCKDB_PATH", str(db_path))
+    reset_settings_cache()
+    try:
+        rows = p2_dry_run._load_tushare_staging_rows(
+            cycle_date=date(2026, 4, 16),
+            symbols=("600519.SH",),
+        )
+        assert [row["ts_code"] for row in rows] == ["600519.SH"]
+        assert rows[0]["daily_source_run_id"] == "daily-run-600519.SH"
+
+        connection = duckdb.connect(str(db_path))
+        try:
+            connection.execute(
+                "UPDATE stg_daily SET source_run_id = 'ENT_P2_A' WHERE ts_code = '600519.SH'"
+            )
+        finally:
+            connection.close()
+
+        with pytest.raises(ValueError, match="ENT_P2"):
+            p2_dry_run._load_tushare_staging_rows(
+                cycle_date=date(2026, 4, 16),
+                symbols=("600519.SH",),
+            )
+    finally:
+        reset_settings_cache()
+
+
 @dataclass
 class _ReasonerRecorder:
     calls: list[Mapping[str, Any]] = field(default_factory=list)
@@ -373,6 +517,44 @@ class _StaticCurrentCycleInputProvider:
 class _FailingAuditPersistencePort:
     def persist(self, write_bundle: object) -> object:
         raise RuntimeError("audit storage unavailable")
+
+
+class _FakeEngine:
+    def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
+        self._rows = rows
+        self.disposed = False
+
+    def connect(self) -> object:
+        return _FakeConnection(self._rows)
+
+    def dispose(self) -> None:
+        self.disposed = True
+
+
+class _FakeConnection:
+    def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
+        self._rows = rows
+
+    def __enter__(self) -> "_FakeConnection":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def execute(self, statement: object, parameters: Mapping[str, object]) -> object:
+        assert parameters == {"cycle_id": "CYCLE_20260416"}
+        return _FakeResult(self._rows)
+
+
+class _FakeResult:
+    def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
+        self._rows = rows
+
+    def mappings(self) -> "_FakeResult":
+        return self
+
+    def all(self) -> list[Mapping[str, object]]:
+        return list(self._rows)
 
 
 @dataclass
@@ -564,6 +746,73 @@ def _reasoner_health_probe(*, available: bool) -> object:
         )
 
     return probe
+
+
+def _tushare_staging_row(ts_code: str, pct_chg: float) -> dict[str, object]:
+    return {
+        "ts_code": ts_code,
+        "trade_date": date(2026, 4, 16),
+        "close": 1700.0 if ts_code == "600519.SH" else 11.0,
+        "pre_close": 1680.0 if ts_code == "600519.SH" else 11.1,
+        "pct_chg": pct_chg,
+        "vol": 1200.0,
+        "amount": 2100.0,
+        "daily_source_run_id": f"daily-run-{ts_code}",
+        "daily_raw_loaded_at": "2026-04-16 16:00:00",
+        "name": "Kweichow Moutai" if ts_code == "600519.SH" else "Ping An Bank",
+        "industry": "liquor" if ts_code == "600519.SH" else "banking",
+        "market": "main",
+        "stock_basic_source_run_id": f"stock-basic-run-{ts_code}",
+        "stock_basic_raw_loaded_at": "2026-04-16 16:01:00",
+    }
+
+
+def _seed_tushare_staging_tables(connection: Any) -> None:
+    connection.execute(
+        """
+        CREATE TABLE stg_daily (
+            ts_code VARCHAR,
+            trade_date DATE,
+            close DOUBLE,
+            pre_close DOUBLE,
+            pct_chg DOUBLE,
+            vol DOUBLE,
+            amount DOUBLE,
+            source_run_id VARCHAR,
+            raw_loaded_at TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE stg_stock_basic (
+            ts_code VARCHAR,
+            name VARCHAR,
+            industry VARCHAR,
+            market VARCHAR,
+            source_run_id VARCHAR,
+            raw_loaded_at TIMESTAMP
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO stg_daily VALUES
+            ('600519.SH', DATE '2026-04-16', 1700.0, 1680.0, 1.2, 1200.0, 2100.0,
+             'daily-run-600519.SH', TIMESTAMP '2026-04-16 16:00:00'),
+            ('000001.SZ', DATE '2026-04-16', 11.0, 11.1, -0.4, 2200.0, 3100.0,
+             'daily-run-000001.SZ', TIMESTAMP '2026-04-16 16:00:00')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO stg_stock_basic VALUES
+            ('600519.SH', 'Kweichow Moutai', 'liquor', 'main',
+             'stock-basic-run-600519.SH', TIMESTAMP '2026-04-16 16:01:00'),
+            ('000001.SZ', 'Ping An Bank', 'banking', 'main',
+             'stock-basic-run-000001.SZ', TIMESTAMP '2026-04-16 16:01:00')
+        """
+    )
 
 
 def _check_evaluation_by_name(result: object, check_name: str) -> object:
