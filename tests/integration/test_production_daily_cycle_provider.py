@@ -24,13 +24,19 @@ def test_production_daily_cycle_status_is_truthful_blocker() -> None:
     assert status.blocked is True
     assert status.factory == PRODUCTION_DAILY_CYCLE_FACTORY
     assert status.current_cycle_binding == "dagster_run_tag:cycle_id"
+    assert "phase0_current_cycle_selection" in status.supported_surfaces
+    assert "phase0_data_platform_candidate_freeze_asset" in status.supported_surfaces
+    assert "phase0_graph_status_asset" in status.supported_surfaces
+    assert "phase1_graph_promotion_asset" in status.supported_surfaces
+    assert "phase1_graph_snapshot_asset" in status.supported_surfaces
     assert "phase2_current_cycle_tushare_inputs" in status.supported_surfaces
     assert "phase3_cycle_publish_manifest" in status.supported_surfaces
     assert "audit_eval_formal_audit_replay_persistence" in status.supported_surfaces
-    assert "real_phase0_data_platform_candidate_freeze_asset" in status.missing_surfaces
-    assert "real_phase1_graph_snapshot_asset" in status.missing_surfaces
-    assert "real_audit_eval_retrospective_hook_asset" in status.missing_surfaces
-    assert "not_fake_phase0_phase1_closure" in status.non_claims
+    assert "audit_eval_retrospective_hook_asset" in status.supported_surfaces
+    assert status.missing_surfaces == ()
+    assert "live_gds_zero_skip_proof" in status.runtime_blockers
+    assert "configured_graph_phase1_runtime" in status.runtime_blockers
+    assert "not_live_gds_zero_skip_proof" in status.non_claims
     assert "CYCLE_20260415" not in status_payload
     assert provider.status() == status
     assert provider.p2_provider.require_cycle_tag is True
@@ -54,19 +60,20 @@ def test_production_p2_requires_cycle_id_tag_instead_of_fixed_cycle() -> None:
     )
 
 
-def test_production_daily_cycle_factory_fails_closed_without_fake_phase0_phase1(
+def test_production_daily_cycle_factory_assembles_real_provider_surface(
     dagster_module: object,
     monkeypatch: pytest.MonkeyPatch,
     stub_policy_path: str,
     tmp_dbt_project: Path,
 ) -> None:
+    dagster = dagster_module
     pytest.importorskip("main_core", reason="main-core is required for P2 assets")
 
     policy_path = Path(stub_policy_path)
     assert policy_path.is_absolute()
 
     monkeypatch.setenv("ORCHESTRATOR_POLICY_PATH", str(policy_path))
-    monkeypatch.setenv("ORCHESTRATOR_DEFINITIONS_PROFILE", "phase3")
+    monkeypatch.setenv("ORCHESTRATOR_DEFINITIONS_PROFILE", "p5")
     monkeypatch.setenv(
         "ORCHESTRATOR_MODULE_FACTORIES",
         "orchestrator_adapters.production_daily_cycle:production_daily_cycle_provider",
@@ -74,19 +81,26 @@ def test_production_daily_cycle_factory_fails_closed_without_fake_phase0_phase1(
     _clear_orchestrator_definition_imports()
 
     try:
-        with pytest.raises(
-            RuntimeError,
-            match=(
-                "candidate_freeze asset.*graph_status asset.*"
-                "neo4j_graph_consistency_check.*data_readiness"
-            ),
-        ):
-            importlib.import_module("orchestrator.definitions")
+        definitions = importlib.import_module("orchestrator.definitions")
+        defs = definitions.defs
+        dagster.Definitions.validate_loadable(defs)
+        asset_keys = {
+            asset_key
+            for asset_def in defs.assets or ()
+            for asset_key in getattr(asset_def, "keys", ())
+        }
+        assert dagster.AssetKey(["candidate_freeze"]) in asset_keys
+        assert dagster.AssetKey(["graph_status"]) in asset_keys
+        assert dagster.AssetKey(["graph_promotion"]) in asset_keys
+        assert dagster.AssetKey(["graph_snapshot"]) in asset_keys
+        assert dagster.AssetKey(["l8"]) in asset_keys
+        assert dagster.AssetKey(["cycle_publish_manifest"]) in asset_keys
+        assert dagster.AssetKey(["retrospective_hook"]) in asset_keys
     finally:
         _clear_orchestrator_definition_imports()
 
 
-def test_production_daily_cycle_provider_does_not_supply_fake_phase0_or_phase1(
+def test_production_daily_cycle_provider_supplies_real_surface_asset_names(
     dagster_module: object,
 ) -> None:
     dagster = dagster_module
@@ -103,12 +117,31 @@ def test_production_daily_cycle_provider_does_not_supply_fake_phase0_or_phase1(
         for asset_key in getattr(asset_def, "keys", ())
     }
 
-    assert dagster.AssetKey(["candidate_freeze"]) not in asset_keys
-    assert dagster.AssetKey(["graph_status"]) not in asset_keys
-    assert dagster.AssetKey(["graph_promotion"]) not in asset_keys
-    assert dagster.AssetKey(["graph_snapshot"]) not in asset_keys
+    assert dagster.AssetKey(["candidate_freeze"]) in asset_keys
+    assert dagster.AssetKey(["graph_status"]) in asset_keys
+    assert dagster.AssetKey(["graph_promotion"]) in asset_keys
+    assert dagster.AssetKey(["graph_snapshot"]) in asset_keys
     assert dagster.AssetKey(["l8"]) in asset_keys
     assert dagster.AssetKey(["cycle_publish_manifest"]) in asset_keys
+    assert dagster.AssetKey(["retrospective_hook"]) in asset_keys
+
+
+def test_production_daily_cycle_default_graph_runtime_fails_closed(
+    dagster_module: object,
+) -> None:
+    pytest.importorskip("main_core", reason="main-core is required for P2 assets")
+
+    from orchestrator_adapters.production_daily_cycle import (
+        GRAPH_STATUS_PROVIDER_RESOURCE_KEY,
+        production_daily_cycle_provider,
+    )
+
+    provider = production_daily_cycle_provider()
+    resources = provider.get_resources()
+    graph_status_provider = resources[GRAPH_STATUS_PROVIDER_RESOURCE_KEY].resource_fn(None)
+
+    with pytest.raises(RuntimeError, match="Graph Phase 0 status runtime"):
+        graph_status_provider.get_graph_status(candidate_freeze={}, cycle_id="CYCLE_20260427")
 
 
 def _clear_orchestrator_definition_imports() -> None:

@@ -120,6 +120,31 @@ class P2PersistedAuditRecords:
     replay_record_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class P2PublishedManifest:
+    """Published manifest enriched with the lineage needed by audit-eval."""
+
+    cycle_id: str
+    manifest_ref: str
+    manifest_version: str
+    table_snapshots: Mapping[str, str]
+    formal_snapshot_refs: Mapping[str, str]
+    recommendation_provenance: Mapping[str, object]
+    persisted_audit_record_ids: tuple[str, ...]
+    persisted_replay_record_ids: tuple[str, ...]
+
+    def audit_eval_manifest_draft(self) -> object:
+        """Return the audit-eval manifest contract without importing it at import time."""
+
+        from audit_eval.contracts import CyclePublishManifestDraft
+
+        return CyclePublishManifestDraft(
+            published_cycle_id=self.cycle_id,
+            snapshot_refs=dict(self.formal_snapshot_refs),
+            published_at=datetime.fromisoformat(self.manifest_version),
+        )
+
+
 class P2InputProvider(Protocol):
     """Current-cycle data-platform input boundary for P2 L1."""
 
@@ -644,7 +669,6 @@ class P2DryRunAssetFactoryProvider:
 
         @dagster.asset(name=PHASE2_STAGE_KEYS[6], group_name=PHASE2_GROUP_NAME)
         def l7(l5, l6, l4):
-            cycle_id = str(getattr(l5, "cycle_id"))
             recommendations = tuple(generate_recommendations(l5, l6, l4, overrides=()))
             return recommendations
 
@@ -731,11 +755,30 @@ class P2DryRunAssetFactoryProvider:
                 cycle_id=formal_objects_commit.cycle_id,
                 provenance=formal_objects_commit.recommendation_provenance,
             )
-            return publish_port.write_cycle_manifest(
+            manifest = publish_port.write_cycle_manifest(
                 cycle_id=formal_objects_commit.cycle_id,
                 committed_objects=formal_objects_commit.committed_objects,
                 expected_manifest_ref=expected_manifest_ref,
                 recommendation_provenance=formal_objects_commit.recommendation_provenance,
+            )
+            return P2PublishedManifest(
+                cycle_id=formal_objects_commit.cycle_id,
+                manifest_ref=str(getattr(manifest, "manifest_ref")),
+                manifest_version=str(getattr(manifest, "manifest_version")),
+                table_snapshots=dict(getattr(manifest, "table_snapshots")),
+                formal_snapshot_refs={
+                    str(getattr(committed, "object_key")): str(getattr(committed, "ref"))
+                    for committed in formal_objects_commit.committed_objects
+                },
+                recommendation_provenance=dict(
+                    formal_objects_commit.recommendation_provenance,
+                ),
+                persisted_audit_record_ids=(
+                    formal_objects_commit.persisted_audit_record_ids
+                ),
+                persisted_replay_record_ids=(
+                    formal_objects_commit.persisted_replay_record_ids
+                ),
             )
 
         return (
@@ -1438,6 +1481,7 @@ __all__ = [
     "P2InputProvider",
     "P2LayerEvidence",
     "P2PersistedAuditRecords",
+    "P2PublishedManifest",
     "P2ReasonerUnavailable",
     "P2WorldStateDeltaPayload",
     "p2_dry_run_provider",
