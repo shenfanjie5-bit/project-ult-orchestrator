@@ -30,18 +30,25 @@ def test_p2_dry_run_materializes_current_cycle_l8_and_manifest_handoff(
         PHASE3_MANIFEST_ASSET_KEY,
     )
     from orchestrator_adapters.p2_dry_run import (
+        AuditEvalPersistencePort,
         DefaultReasonerRuntimeGateway,
         P2DryRunAssetFactoryProvider,
     )
+    from audit_eval.audit import InMemoryFormalAuditStorageAdapter
 
     reasoner_recorder = _ReasonerRecorder()
     publish_recorder = _PublishRecorder()
+    audit_storage = InMemoryFormalAuditStorageAdapter()
     provider = P2DryRunAssetFactoryProvider(
         reasoner_gateway=DefaultReasonerRuntimeGateway(
             client_factory=reasoner_recorder.client_factory,
             health_probe=_reasoner_health_probe(available=True),
         ),
+        input_provider=_StaticCurrentCycleInputProvider(),
         publish_port_factory=lambda: _FakePublishPort(publish_recorder),
+        audit_persistence_port=AuditEvalPersistencePort(
+            storage_factory=lambda: audit_storage,
+        ),
     )
     defs = build_definitions(
         module_factories=[
@@ -80,6 +87,35 @@ def test_p2_dry_run_materializes_current_cycle_l8_and_manifest_handoff(
     assert len(audit_bundle.audit_records) >= 5
     assert len(audit_bundle.replay_records) >= 5
     assert all(record.manifest_cycle_id == "CYCLE_20260416" for record in audit_bundle.replay_records)
+    assert formal_commit.persisted_audit_record_ids == tuple(
+        record.record_id for record in audit_bundle.audit_records
+    )
+    assert formal_commit.persisted_replay_record_ids == tuple(
+        record.replay_id for record in audit_bundle.replay_records
+    )
+    assert len(audit_storage.audit_rows) == len(audit_bundle.audit_records)
+    assert len(audit_storage.replay_rows) == len(audit_bundle.replay_records)
+    assert formal_commit.state.input_evidence["cycle_id"] == "CYCLE_20260416"
+    assert formal_commit.state.input_evidence["symbols"] == ["600519.SH", "000001.SZ"]
+    assert formal_commit.state.input_evidence["input_tables"] == [
+        "main.stg_daily",
+        "main.stg_stock_basic",
+    ]
+    assert formal_commit.state.input_evidence["source_run_ids"] == [
+        "daily-run-20260416",
+        "stock-basic-run-20260416",
+    ]
+    assert formal_commit.state.input_evidence["partition_date"] == "2026-04-16"
+    assert formal_commit.state.input_evidence["source"] != "legacy-test-input"
+    pool_payload = next(
+        call["payload"]
+        for call in publish_recorder.commit_calls
+        if call["object_key"] == "official_alpha_pool"
+    )
+    committed_entities = set(pool_payload["selected_entities"])
+    assert "600519.SH" in committed_entities
+    assert "ENT_P2_A" not in committed_entities
+    assert "ENT_P2_B" not in committed_entities
 
 
 def test_p2_dry_run_hard_stops_without_llm_before_l8_or_publish(
@@ -97,18 +133,25 @@ def test_p2_dry_run_hard_stops_without_llm_before_l8_or_publish(
         PHASE3_MANIFEST_ASSET_KEY,
     )
     from orchestrator_adapters.p2_dry_run import (
+        AuditEvalPersistencePort,
         DefaultReasonerRuntimeGateway,
         P2DryRunAssetFactoryProvider,
     )
+    from audit_eval.audit import InMemoryFormalAuditStorageAdapter
 
     reasoner_recorder = _ReasonerRecorder()
     publish_recorder = _PublishRecorder()
+    audit_storage = InMemoryFormalAuditStorageAdapter()
     provider = P2DryRunAssetFactoryProvider(
         reasoner_gateway=DefaultReasonerRuntimeGateway(
             client_factory=reasoner_recorder.client_factory,
             health_probe=_reasoner_health_probe(available=False),
         ),
+        input_provider=_StaticCurrentCycleInputProvider(),
         publish_port_factory=lambda: _FakePublishPort(publish_recorder),
+        audit_persistence_port=AuditEvalPersistencePort(
+            storage_factory=lambda: audit_storage,
+        ),
     )
     defs = build_definitions(
         module_factories=[
@@ -139,7 +182,57 @@ def test_p2_dry_run_hard_stops_without_llm_before_l8_or_publish(
     assert publish_recorder.manifest_provenance is None
 
 
-def test_p2_provenance_rejects_missing_or_smoke_audit_replay_ids() -> None:
+def test_p2_dry_run_does_not_publish_when_audit_persistence_fails(
+    dagster_module: object,
+    dagster_instance: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
+
+    from orchestrator.definitions import build_definitions
+    from orchestrator.jobs.phase3 import PHASE3_MANIFEST_ASSET_KEY
+    from orchestrator_adapters.p2_dry_run import (
+        DefaultReasonerRuntimeGateway,
+        P2DryRunAssetFactoryProvider,
+    )
+
+    reasoner_recorder = _ReasonerRecorder()
+    publish_recorder = _PublishRecorder()
+    provider = P2DryRunAssetFactoryProvider(
+        reasoner_gateway=DefaultReasonerRuntimeGateway(
+            client_factory=reasoner_recorder.client_factory,
+            health_probe=_reasoner_health_probe(available=True),
+        ),
+        input_provider=_StaticCurrentCycleInputProvider(),
+        publish_port_factory=lambda: _FakePublishPort(publish_recorder),
+        audit_persistence_port=_FailingAuditPersistencePort(),
+    )
+    defs = build_definitions(
+        module_factories=[
+            _fake_phase0_provider(dagster),
+            _fake_phase1_provider(dagster),
+            provider,
+        ],
+        policy_path=stub_policy_path,
+    )
+    dagster.Definitions.validate_loadable(defs)
+
+    result = defs.get_job_def("daily_cycle_job").execute_in_process(
+        instance=dagster_instance,
+        raise_on_error=False,
+        tags={"cycle_id": "CYCLE_20260416"},
+    )
+
+    assert result.success is False
+    assert dagster.AssetKey([PHASE3_MANIFEST_ASSET_KEY]) not in asset_materialization_keys(result)
+    assert publish_recorder.manifest_provenance is None
+
+
+@pytest.mark.parametrize("forbidden_marker", ["smoke", "fixture", "historical"])
+def test_p2_provenance_rejects_missing_or_forbidden_audit_replay_ids(
+    forbidden_marker: str,
+) -> None:
     from orchestrator_adapters.p2_dry_run import P2DryRunState, P2LayerEvidence
 
     missing_l6_state = P2DryRunState(
@@ -150,11 +243,12 @@ def test_p2_provenance_rejects_missing_or_smoke_audit_replay_ids() -> None:
             _evidence("L7"),
             _evidence("L8"),
         ),
+        input_evidence={},
     )
     with pytest.raises(ValueError, match="missing layer evidence: L6"):
         missing_l6_state.recommendation_provenance(14)
 
-    smoke_state = P2DryRunState(
+    forbidden_state = P2DryRunState(
         cycle_id="CYCLE_20260416",
         formal_objects={},
         evidence=(
@@ -164,14 +258,15 @@ def test_p2_provenance_rejects_missing_or_smoke_audit_replay_ids() -> None:
             P2LayerEvidence(
                 layer="L8",
                 object_ref="publish_bundle",
-                audit_record_id="audit-p1c-smoke-CYCLE_20260416",
-                replay_record_id="replay-p1c-smoke-CYCLE_20260416",
+                audit_record_id=f"audit-p1c-{forbidden_marker}-CYCLE_20260416",
+                replay_record_id=f"replay-p1c-{forbidden_marker}-CYCLE_20260416",
                 called_llm=False,
             ),
         ),
+        input_evidence={},
     )
-    with pytest.raises(ValueError, match="must not contain smoke"):
-        smoke_state.recommendation_provenance(14)
+    with pytest.raises(ValueError, match="must not contain smoke, fixture, or historical"):
+        forbidden_state.recommendation_provenance(14)
 
 
 @dataclass
@@ -224,6 +319,60 @@ class _FakeStructuredClient:
             cost_estimate=0.0,
             latency_ms=1,
         )
+
+
+class _StaticCurrentCycleInputProvider:
+    def load_current_cycle_inputs(
+        self,
+        *,
+        cycle_id: str,
+        graph_snapshot: str,
+    ) -> object:
+        from main_core.common.schemas import FeatureSignalBundle
+        from orchestrator_adapters.p2_dry_run import P2CurrentCycleInputs
+
+        return P2CurrentCycleInputs(
+            feature_bundles=(
+                FeatureSignalBundle(
+                    cycle_id=cycle_id,
+                    entity_id="600519.SH",
+                    feature_values={"momentum": 0.012, "close": 1700.0},
+                    signal_values={
+                        "source": "tushare-staging",
+                        "trade_date": "2026-04-16",
+                    },
+                    graph_features={"graph_snapshot_ref": graph_snapshot},
+                    feature_weight_multiplier={"momentum": 1.0, "close": 1.0},
+                ),
+                FeatureSignalBundle(
+                    cycle_id=cycle_id,
+                    entity_id="000001.SZ",
+                    feature_values={"momentum": -0.004, "close": 11.0},
+                    signal_values={
+                        "source": "tushare-staging",
+                        "trade_date": "2026-04-16",
+                    },
+                    graph_features={"graph_snapshot_ref": graph_snapshot},
+                    feature_weight_multiplier={"momentum": 1.0, "close": 1.0},
+                ),
+            ),
+            evidence={
+                "cycle_id": cycle_id,
+                "trade_date": "2026-04-16",
+                "symbols": ["600519.SH", "000001.SZ"],
+                "candidate_count": 2,
+                "input_tables": ["main.stg_daily", "main.stg_stock_basic"],
+                "source_run_ids": ["daily-run-20260416", "stock-basic-run-20260416"],
+                "raw_loaded_at": ["2026-04-16T16:00:00", "2026-04-16T16:01:00"],
+                "partition_date": "2026-04-16",
+                "source": "data-platform:tushare-staging:frozen-candidates",
+            },
+        )
+
+
+class _FailingAuditPersistencePort:
+    def persist(self, write_bundle: object) -> object:
+        raise RuntimeError("audit storage unavailable")
 
 
 @dataclass

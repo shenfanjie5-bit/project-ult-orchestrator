@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 import hashlib
 import json
 import os
@@ -14,13 +14,16 @@ from pydantic import BaseModel, Field
 
 
 _DEFAULT_CYCLE_ID = "CYCLE_20260416"
-_DEFAULT_PROVIDER = "openai"
-_DEFAULT_MODEL = "gpt-4"
+_DEFAULT_PROVIDER = "openai-codex"
+_DEFAULT_MODEL = "gpt-5.5"
+_DEFAULT_HEALTH_TIMEOUT_S = 30.0
 _SOURCE_KIND = "current-cycle"
 _SOURCE_LAYER = "L8"
 _RECOMMENDATION_OBJECT_KEY = "recommendation_snapshot"
 _REQUIRED_RECOMMENDATION_LAYERS = frozenset({"L4", "L6", "L7", "L8"})
 _FORBIDDEN_PROVENANCE_MARKERS = ("smoke", "fixture", "historical")
+_INPUT_TABLE_DAILY = "main.stg_daily"
+_INPUT_TABLE_STOCK_BASIC = "main.stg_stock_basic"
 
 
 class P2ReasonerUnavailable(RuntimeError):
@@ -40,9 +43,8 @@ class P2AlphaAnalysisPayload(BaseModel):
     score: float | None
     confidence: float = Field(ge=0.0, le=1.0)
     rationale: str
-    similar_cases: list[dict[str, Any]] = Field(default_factory=list)
-    task_failed: bool = False
-    failure_reason: str | None = None
+    task_failed: bool
+    failure_reason: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,12 +64,21 @@ class P2LayerEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class P2CurrentCycleInputs:
+    """Frozen current-cycle inputs loaded from data-platform for P2 L1."""
+
+    feature_bundles: tuple[object, ...]
+    evidence: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
 class P2DryRunState:
     """Current-cycle formal objects and audit/replay evidence before commit."""
 
     cycle_id: str
     formal_objects: Mapping[str, object]
     evidence: tuple[P2LayerEvidence, ...]
+    input_evidence: Mapping[str, object]
 
     def recommendation_provenance(self, recommendation_snapshot_id: int) -> dict[str, object]:
         """Return the fail-closed provenance payload for formal recommendation publish."""
@@ -96,6 +107,35 @@ class P2CommittedFormalObjects:
     committed_objects: tuple[object, ...]
     recommendation_provenance: Mapping[str, object]
     audit_write_bundle: object
+    persisted_audit_record_ids: tuple[str, ...]
+    persisted_replay_record_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class P2PersistedAuditRecords:
+    """Persisted audit/replay ids returned by audit-eval storage."""
+
+    audit_record_ids: tuple[str, ...]
+    replay_record_ids: tuple[str, ...]
+
+
+class P2InputProvider(Protocol):
+    """Current-cycle data-platform input boundary for P2 L1."""
+
+    def load_current_cycle_inputs(
+        self,
+        *,
+        cycle_id: str,
+        graph_snapshot: str,
+    ) -> P2CurrentCycleInputs:
+        """Return feature bundles and source evidence for one frozen cycle."""
+
+
+class P2AuditPersistencePort(Protocol):
+    """Durable audit/replay persistence boundary for P2 Phase 3 handoff."""
+
+    def persist(self, write_bundle: object) -> P2PersistedAuditRecords:
+        """Persist AuditRecord and ReplayRecord rows and return their ids."""
 
 
 class P2ReasonerGateway(Protocol):
@@ -172,6 +212,7 @@ class DefaultReasonerRuntimeGateway:
         return reasoner_runtime.health_check(
             list(self._resolved_profiles()),
             probe=self._health_probe,
+            timeout_s=_health_timeout_s(),
         )
 
     def propose_world_state_delta(
@@ -227,7 +268,9 @@ class DefaultReasonerRuntimeGateway:
                 score=cast(float | None, parsed_result["score"]),
                 confidence=float(parsed_result["confidence"]),
                 rationale=str(parsed_result["rationale"]),
-                similar_cases=list(cast(list[dict[str, Any]], parsed_result["similar_cases"])),
+                similar_cases=list(
+                    cast(list[dict[str, Any]], parsed_result.get("similar_cases", []))
+                ),
                 task_failed=bool(parsed_result["task_failed"]),
                 failure_reason=cast(str | None, parsed_result["failure_reason"]),
             ),
@@ -309,6 +352,105 @@ class DefaultReasonerRuntimeGateway:
         )
 
 
+class DataPlatformTushareCurrentCycleInputProvider:
+    """Load P2 L1 inputs from frozen candidates and Tushare staging views."""
+
+    def load_current_cycle_inputs(
+        self,
+        *,
+        cycle_id: str,
+        graph_snapshot: str,
+    ) -> P2CurrentCycleInputs:
+        cycle_date = _cycle_date(cycle_id)
+        selected_candidates = _load_frozen_candidate_symbols(cycle_id)
+        symbols = tuple(candidate["ts_code"] for candidate in selected_candidates)
+        if not symbols:
+            raise ValueError("P2 dry-run requires frozen current-cycle Tushare symbols")
+
+        rows = _load_tushare_staging_rows(cycle_date=cycle_date, symbols=symbols)
+        rows_by_symbol = {str(row["ts_code"]): row for row in rows}
+        missing_symbols = [symbol for symbol in symbols if symbol not in rows_by_symbol]
+        if missing_symbols:
+            raise ValueError(
+                "P2 dry-run Tushare staging input missing frozen symbols: "
+                + ", ".join(missing_symbols)
+            )
+
+        feature_bundles = tuple(
+            _feature_bundle_from_tushare_row(
+                cycle_id=cycle_id,
+                graph_snapshot=graph_snapshot,
+                row=rows_by_symbol[symbol],
+            )
+            for symbol in symbols
+        )
+        evidence = {
+            "cycle_id": cycle_id,
+            "trade_date": cycle_date.isoformat(),
+            "symbols": list(symbols),
+            "candidate_ids": [candidate["candidate_id"] for candidate in selected_candidates],
+            "candidate_count": len(selected_candidates),
+            "input_tables": [_INPUT_TABLE_DAILY, _INPUT_TABLE_STOCK_BASIC],
+            "input_row_count": len(rows),
+            "source_run_ids": sorted(
+                {
+                    str(row[field_name])
+                    for row in rows
+                    for field_name in ("daily_source_run_id", "stock_basic_source_run_id")
+                    if row.get(field_name)
+                }
+            ),
+            "raw_loaded_at": sorted(
+                {
+                    str(row[field_name])
+                    for row in rows
+                    for field_name in ("daily_raw_loaded_at", "stock_basic_raw_loaded_at")
+                    if row.get(field_name)
+                }
+            ),
+            "partition_date": cycle_date.isoformat(),
+            "source": "data-platform:tushare-staging:frozen-candidates",
+        }
+        return P2CurrentCycleInputs(
+            feature_bundles=feature_bundles,
+            evidence=evidence,
+        )
+
+
+class AuditEvalPersistencePort:
+    """Persist P2 audit/replay bundles through audit-eval storage."""
+
+    def __init__(
+        self,
+        storage_factory: Callable[[], object] | None = None,
+    ) -> None:
+        self._storage_factory = storage_factory
+
+    def persist(self, write_bundle: object) -> P2PersistedAuditRecords:
+        from audit_eval.audit import (
+            get_default_storage_adapter,
+            persist_audit_records,
+            persist_replay_records,
+        )
+
+        storage = (
+            self._storage_factory()
+            if self._storage_factory is not None
+            else get_default_storage_adapter()
+        )
+        audit_record_ids = tuple(persist_audit_records(cast(Any, write_bundle), storage))
+        replay_record_ids = tuple(persist_replay_records(cast(Any, write_bundle), storage))
+        _assert_persisted_bundle_ids(
+            write_bundle=write_bundle,
+            audit_record_ids=audit_record_ids,
+            replay_record_ids=replay_record_ids,
+        )
+        return P2PersistedAuditRecords(
+            audit_record_ids=audit_record_ids,
+            replay_record_ids=replay_record_ids,
+        )
+
+
 class DataPlatformIcebergPublishPort:
     """Data-platform formal Iceberg writer + publish_manifest adapter."""
 
@@ -385,12 +527,16 @@ class P2DryRunAssetFactoryProvider:
         self,
         *,
         reasoner_gateway: P2ReasonerGateway | None = None,
+        input_provider: P2InputProvider | None = None,
         publish_port_factory: Callable[[], P2PublishPort] | None = None,
+        audit_persistence_port: P2AuditPersistencePort | None = None,
         provide_llm_health_probe: bool = True,
         provide_io_manager: bool = True,
     ) -> None:
         self.reasoner_gateway = reasoner_gateway or DefaultReasonerRuntimeGateway()
+        self.input_provider = input_provider or DataPlatformTushareCurrentCycleInputProvider()
         self.publish_port_factory = publish_port_factory or DataPlatformIcebergPublishPort
+        self.audit_persistence_port = audit_persistence_port or AuditEvalPersistencePort()
         self.provide_llm_health_probe = provide_llm_health_probe
         self.provide_io_manager = provide_io_manager
 
@@ -417,16 +563,18 @@ class P2DryRunAssetFactoryProvider:
         )
 
         gateway = self.reasoner_gateway
+        input_provider = self.input_provider
         publish_port_factory = self.publish_port_factory
+        audit_persistence_port = self.audit_persistence_port
 
         @dagster.asset(name=PHASE2_STAGE_KEYS[0], group_name=PHASE2_GROUP_NAME)
         def l1(context, graph_snapshot: str):
             cycle_id = _cycle_id_from_context(context)
             _reject_non_current_cycle_id(cycle_id)
             _reset_gateway_evidence(gateway)
-            return (
-                _feature_bundle(cycle_id, "ENT_P2_A", 0.78, graph_snapshot),
-                _feature_bundle(cycle_id, "ENT_P2_B", 0.44, graph_snapshot),
+            return input_provider.load_current_cycle_inputs(
+                cycle_id=cycle_id,
+                graph_snapshot=graph_snapshot,
             )
 
         @dagster.asset(name=PHASE2_STAGE_KEYS[1], group_name=PHASE2_GROUP_NAME)
@@ -439,17 +587,23 @@ class P2DryRunAssetFactoryProvider:
 
         @dagster.asset(name=PHASE2_STAGE_KEYS[3], group_name=PHASE2_GROUP_NAME)
         def l4(l3):
-            cycle_id = str(l3[0].cycle_id)
+            feature_bundles = _feature_bundles_from_inputs(l3)
+            cycle_id = str(feature_bundles[0].cycle_id)
             reasoner_port = _WorldStateReasonerPortAdapter(gateway, cycle_id=cycle_id)
             return derive_world_state(
-                l3[0],
+                feature_bundles[0],
                 reasoner_port=reasoner_port,
-                macro_context={"entity_count": len(l3)},
+                macro_context={"entity_count": len(feature_bundles)},
             )
 
         @dagster.asset(name=PHASE2_STAGE_KEYS[4], group_name=PHASE2_GROUP_NAME)
         def l5(l4, l3):
-            return select_official_alpha_pool(l4, l3, capacity=len(l3))
+            feature_bundles = _feature_bundles_from_inputs(l3)
+            return select_official_alpha_pool(
+                l4,
+                feature_bundles,
+                capacity=len(feature_bundles),
+            )
 
         @dagster.asset(name=PHASE2_STAGE_KEYS[5], group_name=PHASE2_GROUP_NAME)
         def l6(
@@ -458,7 +612,8 @@ class P2DryRunAssetFactoryProvider:
             l3,
         ):
             cycle_id = str(getattr(l5, "cycle_id"))
-            bundles_by_entity = {str(bundle.entity_id): bundle for bundle in l3}
+            feature_bundles = _feature_bundles_from_inputs(l3)
+            bundles_by_entity = {str(bundle.entity_id): bundle for bundle in feature_bundles}
             analyzer = SinglePromptAnalyzer(
                 _AlphaReasonerPortAdapter(gateway, cycle_id=cycle_id)
             )
@@ -485,6 +640,7 @@ class P2DryRunAssetFactoryProvider:
 
         @dagster.asset(name=PHASE2_STAGE_KEYS[7], group_name=PHASE2_GROUP_NAME)
         def l8(
+            l3,
             l4,
             l5,
             l6,
@@ -507,6 +663,7 @@ class P2DryRunAssetFactoryProvider:
                 cycle_id=cycle_id,
                 formal_objects=formal_objects,
                 evidence=evidence,
+                input_evidence=_input_evidence_from_inputs(l3),
             )
 
         @dagster.asset(
@@ -529,6 +686,7 @@ class P2DryRunAssetFactoryProvider:
                 committed_objects=committed,
                 dagster_run_id=_run_id_from_context(context),
             )
+            persisted_audit = audit_persistence_port.persist(audit_write_bundle)
             recommendation_provenance = l8.recommendation_provenance(
                 recommendation_snapshot_id
             )
@@ -536,12 +694,18 @@ class P2DryRunAssetFactoryProvider:
                 cycle_id=l8.cycle_id,
                 provenance=recommendation_provenance,
             )
+            _assert_persisted_provenance_ids(
+                provenance=recommendation_provenance,
+                persisted=persisted_audit,
+            )
             return P2CommittedFormalObjects(
                 cycle_id=l8.cycle_id,
                 state=l8,
                 committed_objects=committed,
                 recommendation_provenance=recommendation_provenance,
                 audit_write_bundle=audit_write_bundle,
+                persisted_audit_record_ids=persisted_audit.audit_record_ids,
+                persisted_replay_record_ids=persisted_audit.replay_record_ids,
             )
 
         @dagster.asset(
@@ -685,6 +849,24 @@ def _gateway_evidence(gateway: P2ReasonerGateway) -> tuple[P2LayerEvidence, ...]
     return tuple(item for item in evidence if isinstance(item, P2LayerEvidence))
 
 
+def _feature_bundles_from_inputs(value: object) -> tuple[object, ...]:
+    if isinstance(value, P2CurrentCycleInputs):
+        feature_bundles = value.feature_bundles
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        feature_bundles = tuple(value)
+    else:
+        raise TypeError("P2 L1 input must be P2CurrentCycleInputs or a sequence")
+    if not feature_bundles:
+        raise ValueError("P2 dry-run requires non-empty current-cycle feature input")
+    return feature_bundles
+
+
+def _input_evidence_from_inputs(value: object) -> Mapping[str, object]:
+    if isinstance(value, P2CurrentCycleInputs):
+        return dict(value.evidence)
+    raise TypeError("P2 input evidence must come from P2CurrentCycleInputs")
+
+
 def _required_layer_evidence(
     evidence: Sequence[P2LayerEvidence],
 ) -> tuple[P2LayerEvidence, ...]:
@@ -745,6 +927,45 @@ def _assert_production_recommendation_provenance(
             provenance.get("replay_record_ids"),
         ),
     )
+
+
+def _assert_persisted_provenance_ids(
+    *,
+    provenance: Mapping[str, object],
+    persisted: P2PersistedAuditRecords,
+) -> None:
+    provenance_audit_ids = _coerce_provenance_id_sequence(
+        "audit_record_ids",
+        provenance.get("audit_record_ids"),
+    )
+    provenance_replay_ids = _coerce_provenance_id_sequence(
+        "replay_record_ids",
+        provenance.get("replay_record_ids"),
+    )
+    if tuple(provenance_audit_ids) != persisted.audit_record_ids:
+        raise ValueError("P2 provenance audit ids must match persisted AuditRecord ids")
+    if tuple(provenance_replay_ids) != persisted.replay_record_ids:
+        raise ValueError("P2 provenance replay ids must match persisted ReplayRecord ids")
+
+
+def _assert_persisted_bundle_ids(
+    *,
+    write_bundle: object,
+    audit_record_ids: Sequence[str],
+    replay_record_ids: Sequence[str],
+) -> None:
+    expected_audit_ids = tuple(
+        str(record.record_id)
+        for record in getattr(write_bundle, "audit_records", ())
+    )
+    expected_replay_ids = tuple(
+        str(record.replay_id)
+        for record in getattr(write_bundle, "replay_records", ())
+    )
+    if tuple(audit_record_ids) != expected_audit_ids:
+        raise ValueError("persisted AuditRecord ids did not match the write bundle")
+    if tuple(replay_record_ids) != expected_replay_ids:
+        raise ValueError("persisted ReplayRecord ids did not match the write bundle")
 
 
 def _coerce_provenance_id_sequence(
@@ -847,21 +1068,170 @@ def _non_llm_evidence(cycle_id: str, layer: str, object_key: str) -> P2LayerEvid
     )
 
 
+def _load_frozen_candidate_symbols(cycle_id: str) -> tuple[dict[str, object], ...]:
+    from data_platform.cycle.repository import _create_engine, _text
+
+    engine = _create_engine()
+    try:
+        with engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    _text(
+                        """
+                        SELECT
+                            selection.candidate_id,
+                            candidate_queue.payload,
+                            candidate_queue.submitted_by
+                        FROM data_platform.cycle_candidate_selection AS selection
+                        JOIN data_platform.candidate_queue AS candidate_queue
+                          ON candidate_queue.id = selection.candidate_id
+                        WHERE selection.cycle_id = :cycle_id
+                        ORDER BY candidate_queue.ingest_seq ASC
+                        """
+                    ),
+                    {"cycle_id": cycle_id},
+                )
+                .mappings()
+                .all()
+            )
+    finally:
+        engine.dispose()
+
+    candidates: list[dict[str, object]] = []
+    for row in rows:
+        payload = row["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if not isinstance(payload, Mapping):
+            raise ValueError("P2 frozen candidate payload must be a JSON object")
+        ts_code = payload.get("ts_code") or payload.get("entity_id")
+        if not isinstance(ts_code, str) or not ts_code.strip():
+            raise ValueError("P2 frozen candidate payload requires ts_code")
+        _reject_forbidden_input_marker(ts_code, "ts_code")
+        submitted_by = str(row["submitted_by"])
+        _reject_forbidden_input_marker(submitted_by, "submitted_by")
+        candidates.append(
+            {
+                "candidate_id": int(row["candidate_id"]),
+                "ts_code": ts_code.strip(),
+                "submitted_by": submitted_by,
+            }
+        )
+    return tuple(candidates)
+
+
+def _load_tushare_staging_rows(
+    *,
+    cycle_date: date,
+    symbols: Sequence[str],
+) -> tuple[dict[str, object], ...]:
+    if not symbols:
+        return ()
+    try:
+        import duckdb
+    except ImportError as exc:  # pragma: no cover - dependency guard
+        raise RuntimeError("duckdb is required for P2 Tushare staging input") from exc
+
+    from data_platform.config import get_settings
+
+    placeholders = ", ".join("?" for _ in symbols)
+    sql = f"""
+        SELECT
+            daily.ts_code,
+            daily.trade_date,
+            daily.close,
+            daily.pre_close,
+            daily.pct_chg,
+            daily.vol,
+            daily.amount,
+            daily.source_run_id AS daily_source_run_id,
+            daily.raw_loaded_at AS daily_raw_loaded_at,
+            stock_basic.name,
+            stock_basic.industry,
+            stock_basic.market,
+            stock_basic.source_run_id AS stock_basic_source_run_id,
+            stock_basic.raw_loaded_at AS stock_basic_raw_loaded_at
+        FROM stg_daily AS daily
+        LEFT JOIN stg_stock_basic AS stock_basic
+          ON stock_basic.ts_code = daily.ts_code
+        WHERE daily.trade_date = ?
+          AND daily.ts_code IN ({placeholders})
+        ORDER BY daily.ts_code
+    """
+    connection = duckdb.connect(str(get_settings().duckdb_path))
+    try:
+        rows = connection.execute(sql, [cycle_date, *list(symbols)]).fetchall()
+        columns = [column[0] for column in connection.description]
+    finally:
+        connection.close()
+    result = tuple(dict(zip(columns, row, strict=True)) for row in rows)
+    for row in result:
+        for field_name in ("daily_source_run_id", "stock_basic_source_run_id"):
+            value = row.get(field_name)
+            if value:
+                _reject_forbidden_input_marker(str(value), field_name)
+    return result
+
+
+def _feature_bundle_from_tushare_row(
+    *,
+    cycle_id: str,
+    graph_snapshot: str,
+    row: Mapping[str, object],
+) -> object:
+    ts_code = str(row["ts_code"])
+    pct_chg = _float_value(row.get("pct_chg"))
+    close = _float_value(row.get("close"))
+    pre_close = _float_value(row.get("pre_close"))
+    volume = _float_value(row.get("vol"))
+    amount = _float_value(row.get("amount"))
+    return _feature_bundle(
+        cycle_id,
+        ts_code,
+        pct_chg / 100.0,
+        graph_snapshot,
+        feature_values={
+            "momentum": pct_chg / 100.0,
+            "close": close,
+            "pre_close": pre_close,
+            "volume": volume,
+            "amount": amount,
+        },
+        signal_values={
+            "source": "tushare-staging",
+            "trade_date": str(row.get("trade_date")),
+            "daily_source_run_id": row.get("daily_source_run_id"),
+            "daily_raw_loaded_at": row.get("daily_raw_loaded_at"),
+            "stock_basic_source_run_id": row.get("stock_basic_source_run_id"),
+            "stock_basic_raw_loaded_at": row.get("stock_basic_raw_loaded_at"),
+            "name": row.get("name"),
+            "industry": row.get("industry"),
+            "market": row.get("market"),
+        },
+    )
+
+
 def _feature_bundle(
     cycle_id: str,
     entity_id: str,
     momentum: float,
     graph_snapshot: str,
+    *,
+    feature_values: Mapping[str, float] | None = None,
+    signal_values: Mapping[str, object] | None = None,
 ) -> object:
     from main_core.common.schemas import FeatureSignalBundle
 
     return FeatureSignalBundle(
         cycle_id=cycle_id,
         entity_id=entity_id,
-        feature_values={"momentum": momentum},
-        signal_values={"source": "p2-dry-run"},
+        feature_values=dict(feature_values or {"momentum": momentum}),
+        signal_values=dict(signal_values or {"source": "current-cycle-test-input"}),
         graph_features={"graph_snapshot_ref": graph_snapshot},
-        feature_weight_multiplier={"momentum": 1.0},
+        feature_weight_multiplier={
+            feature_name: 1.0
+            for feature_name in dict(feature_values or {"momentum": momentum})
+        },
     )
 
 
@@ -882,6 +1252,15 @@ def _cycle_id_from_context(context: object) -> str:
     return _DEFAULT_CYCLE_ID
 
 
+def _cycle_date(cycle_id: str) -> date:
+    try:
+        return datetime.strptime(cycle_id.removeprefix("CYCLE_"), "%Y%m%d").date()
+    except ValueError as exc:
+        raise ValueError(
+            "P2 dry-run requires a current data-platform cycle_id like CYCLE_YYYYMMDD"
+        ) from exc
+
+
 def _run_id_from_context(context: object) -> str:
     run = getattr(context, "run", None)
     run_id = getattr(run, "run_id", None) or getattr(context, "run_id", None)
@@ -894,6 +1273,16 @@ def _reject_non_current_cycle_id(cycle_id: str) -> None:
     if not cycle_id.startswith("CYCLE_"):
         raise ValueError(
             "P2 dry-run requires a current data-platform cycle_id like CYCLE_YYYYMMDD",
+        )
+    _cycle_date(cycle_id)
+
+
+def _reject_forbidden_input_marker(value: str, field_name: str) -> None:
+    lowered = value.lower()
+    if any(marker in lowered for marker in (*_FORBIDDEN_PROVENANCE_MARKERS, "synthetic")):
+        raise ValueError(
+            f"P2 current-cycle input {field_name} must not contain "
+            "smoke, fixture, historical, or synthetic markers"
         )
 
 
@@ -928,6 +1317,34 @@ def _payload_row_count(payload: Mapping[str, Any]) -> int:
     if isinstance(items, Sequence) and not isinstance(items, (str, bytes, bytearray)):
         return len(items)
     return 1
+
+
+def _float_value(value: object) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
+        return 0.0
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return 0.0
+        return float(stripped)
+    return float(value)  # type: ignore[arg-type]
+
+
+def _health_timeout_s() -> float:
+    raw_timeout = os.environ.get("P2_REASONER_HEALTH_TIMEOUT_S")
+    if raw_timeout is None:
+        return _DEFAULT_HEALTH_TIMEOUT_S
+    try:
+        timeout = float(raw_timeout)
+    except ValueError:
+        return _DEFAULT_HEALTH_TIMEOUT_S
+    if timeout <= 0:
+        return _DEFAULT_HEALTH_TIMEOUT_S
+    return timeout
 
 
 def _write_formal_payload_snapshot(
@@ -994,13 +1411,18 @@ def _model_dump(value: object) -> object:
 
 
 __all__ = [
+    "AuditEvalPersistencePort",
     "DataPlatformIcebergPublishPort",
+    "DataPlatformTushareCurrentCycleInputProvider",
     "DefaultReasonerRuntimeGateway",
     "P2AlphaAnalysisPayload",
     "P2CommittedFormalObjects",
+    "P2CurrentCycleInputs",
     "P2DryRunAssetFactoryProvider",
     "P2DryRunState",
+    "P2InputProvider",
     "P2LayerEvidence",
+    "P2PersistedAuditRecords",
     "P2ReasonerUnavailable",
     "P2WorldStateDeltaPayload",
     "p2_dry_run_provider",
