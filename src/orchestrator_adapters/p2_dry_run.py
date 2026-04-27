@@ -559,6 +559,7 @@ class P2DryRunAssetFactoryProvider:
         input_provider: P2InputProvider | None = None,
         publish_port_factory: Callable[[], P2PublishPort] | None = None,
         audit_persistence_port: P2AuditPersistencePort | None = None,
+        phase2_pool_failure_rate_provider: object | None = None,
         provide_llm_health_probe: bool = True,
         provide_io_manager: bool = True,
         require_cycle_tag: bool = False,
@@ -567,6 +568,7 @@ class P2DryRunAssetFactoryProvider:
         self.input_provider = input_provider or DataPlatformTushareCurrentCycleInputProvider()
         self.publish_port_factory = publish_port_factory or DataPlatformIcebergPublishPort
         self.audit_persistence_port = audit_persistence_port or AuditEvalPersistencePort()
+        self.phase2_pool_failure_rate_provider = phase2_pool_failure_rate_provider
         self.provide_llm_health_probe = provide_llm_health_probe
         self.provide_io_manager = provide_io_manager
         self.require_cycle_tag = require_cycle_tag
@@ -821,8 +823,15 @@ class P2DryRunAssetFactoryProvider:
                     failed_nodes=(),
                 )
 
+        phase2_pool_failure_rate_resource = (
+            dagster.ResourceDefinition.hardcoded_resource(
+                self.phase2_pool_failure_rate_provider,
+            )
+            if self.phase2_pool_failure_rate_provider is not None
+            else P2PoolFailureRateResource()
+        )
         resources: dict[str, object] = {
-            PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY: P2PoolFailureRateResource(),
+            PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY: phase2_pool_failure_rate_resource,
         }
         if self.provide_llm_health_probe:
             resources["llm_health_probe"] = P2LLMHealthProbeResource()

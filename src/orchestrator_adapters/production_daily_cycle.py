@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+import json
 import os
 from typing import Final, Protocol
 
@@ -43,10 +44,14 @@ RUNTIME_BLOCKERS: Final[tuple[str, ...]] = (
     "live_gds_zero_skip_proof",
     "configured_graph_phase0_status_runtime",
     "configured_graph_phase1_runtime",
+    "configured_phase2_pool_failure_rate_runtime",
     "configured_audit_eval_retrospective_hook_runtime",
     "production_current_cycle_dagster_run_evidence",
 )
 CURRENT_CYCLE_BINDING: Final[str] = "dagster_run_tag:cycle_id"
+PHASE2_POOL_FAILURE_RATE_EVENT_ENV: Final[str] = (
+    "ORCHESTRATOR_PHASE2_POOL_FAILURE_RATE_EVENT_JSON"
+)
 DATA_READINESS_RESOURCE_KEY: Final[str] = "data_readiness"
 GRAPH_STATUS_PROVIDER_RESOURCE_KEY: Final[str] = "graph_status_provider"
 AUDIT_RETROSPECTIVE_RUNTIME_RESOURCE_KEY: Final[str] = (
@@ -108,10 +113,10 @@ class ProductionPhase0Provider:
         def candidate_freeze(context) -> dict:
             from data_platform.cycle import freeze_current_cycle_candidates
 
+            tag_cycle_id = _require_cycle_id_from_context(context)
             result = freeze_current_cycle_candidates()
             evidence = dict(result.evidence)
-            tag_cycle_id = _cycle_id_from_context(context)
-            if tag_cycle_id is not None and tag_cycle_id != result.selection.cycle_id:
+            if tag_cycle_id != result.selection.cycle_id:
                 raise ValueError(
                     "current-cycle selector disagrees with Dagster run tag "
                     f"'cycle_id': selector={result.selection.cycle_id!r}, "
@@ -239,6 +244,7 @@ class ProductionDailyCycleProvider:
         self.phase0_provider = phase0_provider or ProductionPhase0Provider()
         self.graph_phase1_provider = graph_phase1_provider or _default_graph_phase1_provider()
         self.p2_provider = p2_provider or P2DryRunAssetFactoryProvider(
+            phase2_pool_failure_rate_provider=_EnvBackedPhase2PoolFailureRateResource(),
             require_cycle_tag=True,
         )
         self.audit_provider = audit_provider or ProductionAuditEvalProvider()
@@ -282,6 +288,7 @@ class _EnvBackedRetrospectiveHookRuntime:
     """Audit hook runtime using audit-eval's managed DuckDB repository."""
 
     def run(self, cycle_publish_manifest: object) -> object:
+        from audit_eval.audit import DataPlatformManifestGateway
         from audit_eval.audit.storage import DuckDBReplayRepository
         from audit_eval.audit.writer import (
             AUDIT_EVAL_AUDIT_TABLE_ENV,
@@ -319,7 +326,31 @@ class _EnvBackedRetrospectiveHookRuntime:
         return run_real_retrospective_hook(
             request,
             repository=repository,
+            manifest_gateway=DataPlatformManifestGateway(),
+            require_manifest_gateway=True,
             status_storage=InMemoryRetrospectiveHookStatusStorage(),
+        )
+
+
+class _EnvBackedPhase2PoolFailureRateResource:
+    """Production Phase 2 pool gate input loaded from a configured metrics event."""
+
+    def get_phase2_pool_failure_rate_event(self) -> object:
+        from orchestrator.checks import Phase2PoolFailureRateEvent
+
+        raw_payload = os.environ.get(PHASE2_POOL_FAILURE_RATE_EVENT_ENV)
+        if not raw_payload:
+            raise RuntimeError(
+                "Production phase2_pool_failure_rate runtime is not configured; "
+                f"set {PHASE2_POOL_FAILURE_RATE_EVENT_ENV} to a real current-cycle "
+                "pool failure-rate JSON event.",
+            )
+        payload = _load_json_event_payload(raw_payload)
+        return Phase2PoolFailureRateEvent(
+            failed_count=_required_non_bool_int(payload, "failed_count"),
+            total_count=_required_non_bool_int(payload, "total_count"),
+            failed_nodes=tuple(_required_string_sequence(payload, "failed_nodes")),
+            reason=_optional_string(payload.get("reason"), "reason"),
         )
 
 
@@ -387,6 +418,60 @@ def _cycle_id_from_context(context: object) -> str | None:
     return None
 
 
+def _require_cycle_id_from_context(context: object) -> str:
+    cycle_id = _cycle_id_from_context(context)
+    if cycle_id is None:
+        raise ValueError(
+            "production candidate_freeze requires Dagster run tag 'cycle_id' "
+            "before any Phase 0 freeze side effect",
+        )
+    return cycle_id
+
+
+def _load_json_event_payload(raw_payload: str) -> Mapping[str, object]:
+    source = raw_payload.strip()
+    if not source:
+        raise RuntimeError("phase2 pool failure-rate event payload is empty")
+    if not source.startswith("{"):
+        with open(source, encoding="utf-8") as handle:
+            parsed = json.load(handle)
+    else:
+        parsed = json.loads(source)
+    if not isinstance(parsed, Mapping):
+        raise RuntimeError("phase2 pool failure-rate event payload must be a JSON object")
+    return parsed
+
+
+def _required_non_bool_int(payload: Mapping[str, object], key: str) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RuntimeError(f"phase2 pool failure-rate event {key!r} must be an integer")
+    return value
+
+
+def _required_string_sequence(
+    payload: Mapping[str, object],
+    key: str,
+) -> tuple[str, ...]:
+    value = payload.get(key, ())
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise RuntimeError(f"phase2 pool failure-rate event {key!r} must be a string list")
+    strings: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise RuntimeError(
+                f"phase2 pool failure-rate event {key!r} must contain only strings",
+            )
+        strings.append(item)
+    return tuple(strings)
+
+
+def _optional_string(value: object, key: str) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    raise RuntimeError(f"phase2 pool failure-rate event {key!r} must be a string")
+
+
 def _graph_status_ready(value: object) -> bool:
     if isinstance(value, Mapping):
         return value.get("graph_status") == "ready" and value.get("writer_lock_token") is None
@@ -424,6 +509,7 @@ __all__ = [
     "DATA_READINESS_RESOURCE_KEY",
     "GRAPH_STATUS_PROVIDER_RESOURCE_KEY",
     "MISSING_SURFACES",
+    "PHASE2_POOL_FAILURE_RATE_EVENT_ENV",
     "PRODUCTION_DAILY_CYCLE_FACTORY",
     "RUNTIME_BLOCKERS",
     "SUPPORTED_SURFACES",

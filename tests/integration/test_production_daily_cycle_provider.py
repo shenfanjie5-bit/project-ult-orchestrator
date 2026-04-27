@@ -144,6 +144,60 @@ def test_production_daily_cycle_default_graph_runtime_fails_closed(
         graph_status_provider.get_graph_status(candidate_freeze={}, cycle_id="CYCLE_20260427")
 
 
+def test_production_candidate_freeze_requires_cycle_tag_before_side_effect() -> None:
+    from orchestrator_adapters.production_daily_cycle import _require_cycle_id_from_context
+
+    with pytest.raises(ValueError, match="before any Phase 0 freeze side effect"):
+        _require_cycle_id_from_context(SimpleNamespace(tags={}))
+
+    assert (
+        _require_cycle_id_from_context(
+            SimpleNamespace(tags={"cycle_id": "CYCLE_20260427"}),
+        )
+        == "CYCLE_20260427"
+    )
+
+
+def test_production_phase2_pool_failure_rate_resource_fails_closed(
+    dagster_module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("main_core", reason="main-core is required for P2 assets")
+
+    from orchestrator.checks import PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY
+    from orchestrator_adapters.production_daily_cycle import (
+        PHASE2_POOL_FAILURE_RATE_EVENT_ENV,
+        production_daily_cycle_provider,
+    )
+
+    provider = production_daily_cycle_provider()
+    resources = provider.get_resources()
+    pool_resource = resources[PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY].resource_fn(None)
+
+    monkeypatch.delenv(PHASE2_POOL_FAILURE_RATE_EVENT_ENV, raising=False)
+    with pytest.raises(RuntimeError, match="runtime is not configured"):
+        pool_resource.get_phase2_pool_failure_rate_event()
+
+    monkeypatch.setenv(
+        PHASE2_POOL_FAILURE_RATE_EVENT_ENV,
+        json.dumps(
+            {
+                "failed_count": 1,
+                "total_count": 4,
+                "failed_nodes": ["l6:ENT_STOCK_600519.SH"],
+                "reason": "current-cycle metric",
+            },
+        ),
+    )
+
+    event = pool_resource.get_phase2_pool_failure_rate_event()
+
+    assert event.failed_count == 1
+    assert event.total_count == 4
+    assert event.failed_nodes == ("l6:ENT_STOCK_600519.SH",)
+    assert event.reason == "current-cycle metric"
+
+
 def _clear_orchestrator_definition_imports() -> None:
     for module_name in tuple(sys.modules):
         if module_name == "orchestrator.definitions":
