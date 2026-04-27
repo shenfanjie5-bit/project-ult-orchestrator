@@ -41,9 +41,10 @@ SUPPORTED_SURFACES: Final[tuple[str, ...]] = (
 )
 MISSING_SURFACES: Final[tuple[str, ...]] = ()
 RUNTIME_BLOCKERS: Final[tuple[str, ...]] = (
-    "live_gds_zero_skip_proof",
+    "configured_data_platform_current_cycle_runtime",
     "configured_graph_phase0_status_runtime",
     "configured_graph_phase1_runtime",
+    "configured_reasoner_runtime",
     "configured_phase2_pool_failure_rate_runtime",
     "configured_audit_eval_retrospective_hook_runtime",
     "production_current_cycle_dagster_run_evidence",
@@ -373,7 +374,7 @@ def production_daily_cycle_status() -> ProductionDailyCycleProviderStatus:
         current_cycle_binding=CURRENT_CYCLE_BINDING,
         non_claims=(
             "not_p5_shadow_run_readiness",
-            "not_live_gds_zero_skip_proof",
+            "not_live_pg_current_cycle_freeze_proof",
             "not_production_daily_cycle_pass_certificate",
             "not_fixed_cycle_20260415_replay",
         ),

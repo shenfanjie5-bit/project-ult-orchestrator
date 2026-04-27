@@ -34,9 +34,12 @@ def test_production_daily_cycle_status_is_truthful_blocker() -> None:
     assert "audit_eval_formal_audit_replay_persistence" in status.supported_surfaces
     assert "audit_eval_retrospective_hook_asset" in status.supported_surfaces
     assert status.missing_surfaces == ()
-    assert "live_gds_zero_skip_proof" in status.runtime_blockers
+    assert "live_gds_zero_skip_proof" not in status.runtime_blockers
+    assert "configured_data_platform_current_cycle_runtime" in status.runtime_blockers
     assert "configured_graph_phase1_runtime" in status.runtime_blockers
-    assert "not_live_gds_zero_skip_proof" in status.non_claims
+    assert "configured_reasoner_runtime" in status.runtime_blockers
+    assert "not_live_gds_zero_skip_proof" not in status.non_claims
+    assert "not_live_pg_current_cycle_freeze_proof" in status.non_claims
     assert "CYCLE_20260415" not in status_payload
     assert provider.status() == status
     assert provider.p2_provider.require_cycle_tag is True
