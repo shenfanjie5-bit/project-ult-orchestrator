@@ -33,6 +33,7 @@ def test_phase2_pool_failure_rate_event_fields_match_contract() -> None:
         "total_count",
         "failed_nodes",
         "reason",
+        "cycle_id",
     ]
 
 

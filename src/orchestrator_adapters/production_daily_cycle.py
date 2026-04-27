@@ -3,7 +3,9 @@
 The provider exposes the real checked-in Phase 0, Phase 1, Phase 2, Phase 3,
 and audit hook surfaces. Runtime dependencies still fail closed unless the
 environment supplies the corresponding data-platform, graph-engine, and
-audit-eval backing stores.
+audit-eval backing stores. The Phase 2 pool gate derives from the current L8
+output during production runs, with a persisted metric artifact as the durable
+handoff path.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 import json
 import os
+from pathlib import Path
 from typing import Final, Protocol
 
 from orchestrator_adapters.p2_dry_run import (
@@ -45,7 +48,6 @@ RUNTIME_BLOCKERS: Final[tuple[str, ...]] = (
     "configured_graph_phase0_status_runtime",
     "configured_graph_phase1_runtime",
     "configured_reasoner_runtime",
-    "configured_phase2_pool_failure_rate_runtime",
     "configured_audit_eval_retrospective_hook_runtime",
     "production_current_cycle_dagster_run_evidence",
 )
@@ -53,10 +55,18 @@ CURRENT_CYCLE_BINDING: Final[str] = "dagster_run_tag:cycle_id"
 PHASE2_POOL_FAILURE_RATE_EVENT_ENV: Final[str] = (
     "ORCHESTRATOR_PHASE2_POOL_FAILURE_RATE_EVENT_JSON"
 )
+PHASE2_POOL_FAILURE_RATE_METRIC_ARTIFACT_ENV: Final[str] = (
+    "ORCHESTRATOR_PHASE2_POOL_FAILURE_RATE_METRIC_ARTIFACT"
+)
 DATA_READINESS_RESOURCE_KEY: Final[str] = "data_readiness"
 GRAPH_STATUS_PROVIDER_RESOURCE_KEY: Final[str] = "graph_status_provider"
 AUDIT_RETROSPECTIVE_RUNTIME_RESOURCE_KEY: Final[str] = (
     "audit_eval_retrospective_hook_runtime"
+)
+_ALPHA_RESULT_SNAPSHOT_KEY: Final[str] = "alpha_result_snapshot"
+_OFFICIAL_ALPHA_POOL_KEY: Final[str] = "official_alpha_pool"
+_NON_PRODUCTION_ENV_JSON_FALLBACK_SOURCE: Final[str] = (
+    "non-production env JSON fallback"
 )
 
 
@@ -245,7 +255,7 @@ class ProductionDailyCycleProvider:
         self.phase0_provider = phase0_provider or ProductionPhase0Provider()
         self.graph_phase1_provider = graph_phase1_provider or _default_graph_phase1_provider()
         self.p2_provider = p2_provider or P2DryRunAssetFactoryProvider(
-            phase2_pool_failure_rate_provider=_EnvBackedPhase2PoolFailureRateResource(),
+            phase2_pool_failure_rate_provider=_ProductionPhase2PoolFailureRateResource(),
             require_cycle_tag=True,
         )
         self.audit_provider = audit_provider or ProductionAuditEvalProvider()
@@ -333,25 +343,44 @@ class _EnvBackedRetrospectiveHookRuntime:
         )
 
 
-class _EnvBackedPhase2PoolFailureRateResource:
-    """Production Phase 2 pool gate input loaded from a configured metrics event."""
+class _ProductionPhase2PoolFailureRateResource:
+    """Production Phase 2 pool gate input from current P2 output or metric artifact."""
 
-    def get_phase2_pool_failure_rate_event(self) -> object:
-        from orchestrator.checks import Phase2PoolFailureRateEvent
+    def get_phase2_pool_failure_rate_event(
+        self,
+        *,
+        current_cycle_p2_output: object | None = None,
+    ) -> object:
+        if current_cycle_p2_output is not None:
+            return _phase2_pool_event_from_current_cycle_p2_output(
+                current_cycle_p2_output,
+            )
+
+        artifact = os.environ.get(PHASE2_POOL_FAILURE_RATE_METRIC_ARTIFACT_ENV)
+        if artifact:
+            payload = _load_json_event_artifact(artifact)
+            return _phase2_pool_event_from_metric_payload(
+                payload,
+                source="persisted P2 metric artifact",
+                require_cycle_id=True,
+            )
 
         raw_payload = os.environ.get(PHASE2_POOL_FAILURE_RATE_EVENT_ENV)
-        if not raw_payload:
-            raise RuntimeError(
-                "Production phase2_pool_failure_rate runtime is not configured; "
-                f"set {PHASE2_POOL_FAILURE_RATE_EVENT_ENV} to a real current-cycle "
-                "pool failure-rate JSON event.",
+        if raw_payload:
+            payload = _load_json_event_payload(raw_payload)
+            return _phase2_pool_event_from_metric_payload(
+                payload,
+                source=_NON_PRODUCTION_ENV_JSON_FALLBACK_SOURCE,
+                require_cycle_id=False,
             )
-        payload = _load_json_event_payload(raw_payload)
-        return Phase2PoolFailureRateEvent(
-            failed_count=_required_non_bool_int(payload, "failed_count"),
-            total_count=_required_non_bool_int(payload, "total_count"),
-            failed_nodes=tuple(_required_string_sequence(payload, "failed_nodes")),
-            reason=_optional_string(payload.get("reason"), "reason"),
+
+        raise RuntimeError(
+            "Production phase2_pool_failure_rate runtime has no current-cycle "
+            "metric; run the Phase 2 L8 output-backed check or set "
+            f"{PHASE2_POOL_FAILURE_RATE_METRIC_ARTIFACT_ENV} to a persisted P2 "
+            "metric artifact. "
+            f"{PHASE2_POOL_FAILURE_RATE_EVENT_ENV} is retained only as a "
+            "non-production JSON fallback.",
         )
 
 
@@ -443,6 +472,220 @@ def _load_json_event_payload(raw_payload: str) -> Mapping[str, object]:
     return parsed
 
 
+def _load_json_event_artifact(path_value: str) -> Mapping[str, object]:
+    source = path_value.strip()
+    if not source:
+        raise RuntimeError("phase2 pool failure-rate metric artifact path is empty")
+    if source.startswith("{"):
+        raise RuntimeError(
+            f"{PHASE2_POOL_FAILURE_RATE_METRIC_ARTIFACT_ENV} must be a filesystem "
+            "path to a persisted JSON artifact, not inline JSON",
+        )
+    path = Path(source).expanduser()
+    if not path.is_file():
+        raise RuntimeError(
+            "phase2 pool failure-rate metric artifact path does not exist or is "
+            f"not a file: {path}",
+        )
+    with path.open(encoding="utf-8") as handle:
+        parsed = json.load(handle)
+    if not isinstance(parsed, Mapping):
+        raise RuntimeError("phase2 pool failure-rate metric artifact must be a JSON object")
+    return parsed
+
+
+def _phase2_pool_event_from_current_cycle_p2_output(value: object) -> object:
+    from orchestrator.checks import Phase2PoolFailureRateEvent
+
+    cycle_id = _cycle_id_from_p2_output(value)
+    _cycle_date_from_cycle_id(cycle_id)
+    formal_objects = _formal_objects_from_p2_output(value)
+    alpha_results = _alpha_results_from_formal_objects(formal_objects)
+    selected_entities = _selected_entities_from_formal_objects(formal_objects)
+    if selected_entities is not None:
+        _assert_alpha_results_match_selected_entities(alpha_results, selected_entities)
+
+    failed_nodes: list[str] = []
+    for result in alpha_results:
+        result_cycle_id = _required_string_field(result, "cycle_id", "alpha result")
+        if result_cycle_id != cycle_id:
+            raise RuntimeError(
+                "phase2 pool failure-rate current-cycle output has alpha result "
+                f"cycle_id {result_cycle_id!r}; expected {cycle_id!r}",
+            )
+        entity_id = _required_string_field(result, "entity_id", "alpha result")
+        if _alpha_result_failed(result):
+            failed_nodes.append(f"l6:{entity_id}")
+
+    return Phase2PoolFailureRateEvent(
+        failed_count=len(failed_nodes),
+        total_count=len(alpha_results),
+        failed_nodes=tuple(failed_nodes),
+        reason="derived from current-cycle P2 outputs",
+        cycle_id=cycle_id,
+    )
+
+
+def _phase2_pool_event_from_metric_payload(
+    payload: Mapping[str, object],
+    *,
+    source: str,
+    require_cycle_id: bool,
+) -> object:
+    from orchestrator.checks import Phase2PoolFailureRateEvent
+
+    cycle_id = _optional_string(
+        payload.get("cycle_id") or payload.get("current_cycle_id"),
+        "cycle_id",
+    )
+    if cycle_id is None:
+        if require_cycle_id:
+            raise RuntimeError(
+                f"phase2 pool failure-rate {source} must include cycle_id",
+            )
+    else:
+        _cycle_date_from_cycle_id(cycle_id)
+
+    reason = _optional_string(payload.get("reason"), "reason")
+    return Phase2PoolFailureRateEvent(
+        failed_count=_required_non_bool_int(payload, "failed_count"),
+        total_count=_required_non_bool_int(payload, "total_count"),
+        failed_nodes=tuple(_required_string_sequence(payload, "failed_nodes")),
+        reason=_labeled_metric_reason(source, reason),
+        cycle_id=cycle_id,
+    )
+
+
+def _cycle_id_from_p2_output(value: object) -> str:
+    cycle_id = _mapping_or_attr(value, "cycle_id")
+    if not isinstance(cycle_id, str) or not cycle_id.strip():
+        raise RuntimeError(
+            "phase2 pool failure-rate current-cycle output must include cycle_id",
+        )
+    return cycle_id
+
+
+def _formal_objects_from_p2_output(value: object) -> Mapping[str, object]:
+    if isinstance(value, Mapping) and _ALPHA_RESULT_SNAPSHOT_KEY in value:
+        return value
+
+    formal_objects = _mapping_or_attr(value, "formal_objects")
+    if not isinstance(formal_objects, Mapping):
+        raise RuntimeError(
+            "phase2 pool failure-rate current-cycle output must include "
+            "formal_objects with alpha_result_snapshot",
+        )
+    return formal_objects
+
+
+def _alpha_results_from_formal_objects(
+    formal_objects: Mapping[str, object],
+) -> tuple[object, ...]:
+    alpha_results = formal_objects.get(_ALPHA_RESULT_SNAPSHOT_KEY)
+    if isinstance(alpha_results, (str, bytes)) or not isinstance(
+        alpha_results,
+        Sequence,
+    ):
+        raise RuntimeError(
+            "phase2 pool failure-rate current-cycle metric requires "
+            "formal_objects.alpha_result_snapshot",
+        )
+    if not alpha_results:
+        raise RuntimeError(
+            "phase2 pool failure-rate current-cycle metric requires at least "
+            "one alpha result",
+        )
+    return tuple(alpha_results)
+
+
+def _selected_entities_from_formal_objects(
+    formal_objects: Mapping[str, object],
+) -> tuple[str, ...] | None:
+    pool = formal_objects.get(_OFFICIAL_ALPHA_POOL_KEY)
+    if pool is None:
+        return None
+
+    selected_entities = _mapping_or_attr(pool, "selected_entities")
+    if selected_entities is None:
+        return None
+    if isinstance(selected_entities, (str, bytes)) or not isinstance(
+        selected_entities,
+        Sequence,
+    ):
+        raise RuntimeError(
+            "phase2 pool failure-rate current-cycle metric requires "
+            "official_alpha_pool.selected_entities to be a sequence",
+        )
+
+    values: list[str] = []
+    for entity_id in selected_entities:
+        if not isinstance(entity_id, str) or not entity_id.strip():
+            raise RuntimeError(
+                "phase2 pool failure-rate current-cycle metric requires "
+                "official_alpha_pool.selected_entities to contain strings",
+            )
+        values.append(entity_id)
+    return tuple(values)
+
+
+def _assert_alpha_results_match_selected_entities(
+    alpha_results: Sequence[object],
+    selected_entities: Sequence[str],
+) -> None:
+    result_entities = tuple(
+        _required_string_field(result, "entity_id", "alpha result")
+        for result in alpha_results
+    )
+    if len(set(result_entities)) != len(result_entities):
+        raise RuntimeError(
+            "phase2 pool failure-rate current-cycle metric has duplicate "
+            "alpha result entity_id values",
+        )
+    if set(result_entities) != set(selected_entities):
+        raise RuntimeError(
+            "phase2 pool failure-rate current-cycle metric alpha results must "
+            "match official_alpha_pool.selected_entities",
+        )
+
+
+def _alpha_result_failed(value: object) -> bool:
+    status = _mapping_or_attr(value, "status")
+    if status == "inconclusive":
+        return True
+    if status == "ok":
+        return False
+
+    task_failed = _mapping_or_attr(value, "task_failed")
+    if isinstance(task_failed, bool):
+        return task_failed
+
+    raise RuntimeError(
+        "phase2 pool failure-rate current-cycle metric requires alpha result "
+        "status 'ok' or 'inconclusive'",
+    )
+
+
+def _required_string_field(value: object, key: str, subject: str) -> str:
+    field = _mapping_or_attr(value, key)
+    if not isinstance(field, str) or not field.strip():
+        raise RuntimeError(f"phase2 pool failure-rate {subject} {key} must be a string")
+    return field
+
+
+def _mapping_or_attr(value: object, key: str) -> object:
+    if isinstance(value, Mapping):
+        return value.get(key)
+    return getattr(value, key, None)
+
+
+def _labeled_metric_reason(source: str, reason: str | None) -> str:
+    if reason is None or not reason.strip():
+        return source
+    if reason.startswith(source):
+        return reason
+    return f"{source}: {reason}"
+
+
 def _required_non_bool_int(payload: Mapping[str, object], key: str) -> int:
     value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
@@ -511,6 +754,7 @@ __all__ = [
     "GRAPH_STATUS_PROVIDER_RESOURCE_KEY",
     "MISSING_SURFACES",
     "PHASE2_POOL_FAILURE_RATE_EVENT_ENV",
+    "PHASE2_POOL_FAILURE_RATE_METRIC_ARTIFACT_ENV",
     "PRODUCTION_DAILY_CYCLE_FACTORY",
     "RUNTIME_BLOCKERS",
     "SUPPORTED_SURFACES",

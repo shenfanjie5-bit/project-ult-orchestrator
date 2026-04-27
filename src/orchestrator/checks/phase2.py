@@ -9,6 +9,7 @@ AssetCheckExecutionContext) fails. Keep annotations as real class references.
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from inspect import signature
 from math import isfinite
 from typing import Protocol
 
@@ -56,6 +57,7 @@ class Phase2PoolFailureRateEvent:
     total_count: int
     failed_nodes: tuple[str, ...]
     reason: str | None = None
+    cycle_id: str | None = None
 
 
 class Phase2PoolFailureRateProvider(Protocol):
@@ -174,13 +176,19 @@ def build_phase2_pool_failure_rate_check(asset: object) -> object:
         context: AssetCheckExecutionContext,
         gate_policy: GatePolicyResource,
         phase2_pool_failure_rate: ResourceParam[Phase2PoolFailureRateProvider],
+        l8: object,
     ) -> AssetCheckResult:
-        event = _read_phase2_pool_failure_rate_event(phase2_pool_failure_rate)
+        event = _read_phase2_pool_failure_rate_event(
+            phase2_pool_failure_rate,
+            current_cycle_p2_output=l8,
+        )
+        cycle_id = _cycle_id_from_context(context)
+        _assert_phase2_pool_event_cycle_matches_run(event, cycle_id)
         decision = classify_phase2_pool_failure_rate(event, gate_policy.policy)
         dispatch_phase2_pool_failure_alert(
             decision,
             event,
-            cycle_id=_cycle_id_from_context(context),
+            cycle_id=cycle_id,
             channels=gate_policy.policy.alert_channels,
         )
 
@@ -194,6 +202,8 @@ def build_phase2_pool_failure_rate_check(asset: object) -> object:
 
 def _read_phase2_pool_failure_rate_event(
     provider: Phase2PoolFailureRateProvider,
+    *,
+    current_cycle_p2_output: object | None = None,
 ) -> Phase2PoolFailureRateEvent:
     read_event = getattr(provider, "get_phase2_pool_failure_rate_event", None)
     if not callable(read_event):
@@ -203,7 +213,17 @@ def _read_phase2_pool_failure_rate_event(
         )
         raise TypeError(msg)
 
-    raw_event = read_event()
+    if current_cycle_p2_output is not None and _accepts_current_cycle_p2_output(
+        read_event,
+    ):
+        try:
+            raw_event = read_event(current_cycle_p2_output=current_cycle_p2_output)
+        except TypeError as exc:
+            if not _is_unexpected_current_cycle_p2_output_keyword(exc):
+                raise
+            raw_event = read_event()
+    else:
+        raw_event = read_event()
     if isinstance(raw_event, Phase2PoolFailureRateEvent):
         return raw_event
     if isinstance(raw_event, Mapping):
@@ -214,6 +234,26 @@ def _read_phase2_pool_failure_rate_event(
         "Phase2PoolFailureRateEvent or a mapping"
     )
     raise TypeError(msg)
+
+
+def _accepts_current_cycle_p2_output(read_event: object) -> bool:
+    try:
+        parameters = signature(read_event).parameters
+    except (TypeError, ValueError):
+        return False
+
+    return any(
+        parameter.name == "current_cycle_p2_output"
+        for parameter in parameters.values()
+    )
+
+
+def _is_unexpected_current_cycle_p2_output_keyword(exc: TypeError) -> bool:
+    message = str(exc)
+    return (
+        "current_cycle_p2_output" in message
+        and "unexpected keyword" in message
+    )
 
 
 def _phase2_pool_failure_event_from_mapping(
@@ -229,7 +269,22 @@ def _phase2_pool_failure_event_from_mapping(
         total_count=_required_int(raw_event, "total_count"),
         failed_nodes=tuple(_required_strings(failed_nodes, "failed_nodes")),
         reason=_optional_string(raw_event.get("reason"), "reason"),
+        cycle_id=_optional_string(raw_event.get("cycle_id"), "cycle_id"),
     )
+
+
+def _assert_phase2_pool_event_cycle_matches_run(
+    event: Phase2PoolFailureRateEvent,
+    run_cycle_id: str,
+) -> None:
+    if event.cycle_id is None:
+        return
+    if event.cycle_id != run_cycle_id:
+        msg = (
+            "phase2 pool failure-rate metric cycle_id must match Dagster run "
+            f"tag 'cycle_id': metric={event.cycle_id!r}, run={run_cycle_id!r}"
+        )
+        raise RuntimeError(msg)
 
 
 def _required_int(raw_event: Mapping[str, object], key: str) -> int:
@@ -272,6 +327,7 @@ def _phase2_pool_failure_metadata(
         "total_count": event.total_count,
         "failure_rate": phase2_failure_rate(event.failed_count, event.total_count),
         "failed_nodes": ", ".join(event.failed_nodes),
+        "metric_cycle_id": event.cycle_id or "",
     }
 
 
