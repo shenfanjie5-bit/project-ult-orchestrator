@@ -536,6 +536,7 @@ class P2DryRunAssetFactoryProvider:
         audit_persistence_port: P2AuditPersistencePort | None = None,
         provide_llm_health_probe: bool = True,
         provide_io_manager: bool = True,
+        require_cycle_tag: bool = False,
     ) -> None:
         self.reasoner_gateway = reasoner_gateway or DefaultReasonerRuntimeGateway()
         self.input_provider = input_provider or DataPlatformTushareCurrentCycleInputProvider()
@@ -543,6 +544,7 @@ class P2DryRunAssetFactoryProvider:
         self.audit_persistence_port = audit_persistence_port or AuditEvalPersistencePort()
         self.provide_llm_health_probe = provide_llm_health_probe
         self.provide_io_manager = provide_io_manager
+        self.require_cycle_tag = require_cycle_tag
 
     def get_assets(self) -> tuple[object, ...]:
         import dagster
@@ -570,10 +572,14 @@ class P2DryRunAssetFactoryProvider:
         input_provider = self.input_provider
         publish_port_factory = self.publish_port_factory
         audit_persistence_port = self.audit_persistence_port
+        require_cycle_tag = self.require_cycle_tag
 
         @dagster.asset(name=PHASE2_STAGE_KEYS[0], group_name=PHASE2_GROUP_NAME)
         def l1(context, graph_snapshot: str):
-            cycle_id = _cycle_id_from_context(context)
+            cycle_id = _cycle_id_from_context(
+                context,
+                require_tag=require_cycle_tag,
+            )
             _reject_non_current_cycle_id(cycle_id)
             _reset_gateway_evidence(gateway)
             return input_provider.load_current_cycle_inputs(
@@ -1239,7 +1245,7 @@ def _feature_bundle(
     )
 
 
-def _cycle_id_from_context(context: object) -> str:
+def _cycle_id_from_context(context: object, *, require_tag: bool = False) -> str:
     for tag_container in (
         getattr(context, "run", None),
         context,
@@ -1253,6 +1259,11 @@ def _cycle_id_from_context(context: object) -> str:
             cycle_id = tags.get("cycle_id")
             if isinstance(cycle_id, str) and cycle_id:
                 return cycle_id
+    if require_tag:
+        raise ValueError(
+            "production P2 provider requires Dagster run tag 'cycle_id'; "
+            "fixed current-cycle fallback is not allowed",
+        )
     return _DEFAULT_CYCLE_ID
 
 
