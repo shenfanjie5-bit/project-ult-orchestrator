@@ -854,13 +854,10 @@ def _phase2_pool_gate_asset_key(
     if final_stage_key in phase2_asset_keys:
         return final_stage_key
 
-    if len(phase2_asset_keys) == 1:
-        return next(iter(phase2_asset_keys))
-
     raise ValueError(
         "phase2 pool failure rate gate requires the final Phase 2 contract "
-        f"asset {final_stage_key.to_user_string()!r}, or exactly one "
-        f"group_name={PHASE2_GROUP_NAME!r} asset.",
+        f"asset {final_stage_key.to_user_string()!r} for "
+        f"group_name={PHASE2_GROUP_NAME!r}.",
     )
 
 

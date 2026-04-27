@@ -94,6 +94,50 @@ def test_milestone2_requires_phase2_provider_assets(
         )
 
 
+def test_phase2_provider_requires_l8_boundary_asset(
+    dagster_module: object,
+    dagster_dbt_module: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
+
+    from orchestrator.checks import PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY
+    from orchestrator.definitions import build_definitions
+    from orchestrator.jobs.phase2 import PHASE2_GROUP_NAME, PHASE2_STAGE_KEYS
+
+    @dagster.asset(name=PHASE2_STAGE_KEYS[6], group_name=PHASE2_GROUP_NAME)
+    def phase2_l7(graph_snapshot: str) -> str:
+        return f"{graph_snapshot}:l7"
+
+    class FakePhase2PoolFailureRateResource(dagster.ConfigurableResource):
+        pass
+
+    class FakePhase2Provider:
+        def get_assets(self) -> tuple[object, ...]:
+            return (phase2_l7,)
+
+        def get_checks(self) -> tuple[object, ...]:
+            return ()
+
+        def get_resources(self) -> dict[str, object]:
+            return {
+                PHASE2_POOL_FAILURE_RATE_RESOURCE_KEY: (
+                    FakePhase2PoolFailureRateResource()
+                ),
+            }
+
+    with pytest.raises(ValueError, match="final Phase 2 contract asset 'l8'"):
+        build_definitions(
+            module_factories=[
+                _fake_phase0_surface_provider(dagster),
+                _fake_phase1_provider(dagster),
+                FakePhase2Provider(),
+            ],
+            policy_path=stub_policy_path,
+        )
+
+
 def test_orchestrator_has_no_forbidden_phase2_runtime_imports() -> None:
     assert scan_orchestrator_boundaries(_REPO_ROOT) == []
 
