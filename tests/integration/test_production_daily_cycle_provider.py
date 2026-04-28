@@ -31,7 +31,8 @@ def test_production_daily_cycle_status_is_truthful_blocker() -> None:
     assert "phase0_graph_status_asset" in status.supported_surfaces
     assert "phase1_graph_promotion_asset" in status.supported_surfaces
     assert "phase1_graph_snapshot_asset" in status.supported_surfaces
-    assert "phase2_current_cycle_tushare_inputs" in status.supported_surfaces
+    assert "phase2_current_cycle_canonical_inputs" in status.supported_surfaces
+    assert "phase2_current_cycle_tushare_inputs" not in status.supported_surfaces
     assert "phase3_cycle_publish_manifest" in status.supported_surfaces
     assert "audit_eval_formal_audit_replay_persistence" in status.supported_surfaces
     assert "audit_eval_retrospective_hook_asset" in status.supported_surfaces
@@ -45,6 +46,9 @@ def test_production_daily_cycle_status_is_truthful_blocker() -> None:
     assert "CYCLE_20260415" not in status_payload
     assert provider.status() == status
     assert provider.p2_provider.require_cycle_tag is True
+    assert provider.p2_provider.input_provider.__class__.__name__ == (
+        "DataPlatformCanonicalCurrentCycleInputProvider"
+    )
 
 
 def test_production_p2_requires_cycle_id_tag_instead_of_fixed_cycle() -> None:

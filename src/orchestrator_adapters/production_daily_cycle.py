@@ -35,7 +35,7 @@ SUPPORTED_SURFACES: Final[tuple[str, ...]] = (
     "phase0_neo4j_graph_consistency_check",
     "phase1_graph_promotion_asset",
     "phase1_graph_snapshot_asset",
-    "phase2_current_cycle_tushare_inputs",
+    "phase2_current_cycle_canonical_inputs",
     "phase2_main_core_l1_l8",
     "phase3_formal_objects_commit",
     "phase3_cycle_publish_manifest",

@@ -98,29 +98,30 @@ def test_p2_dry_run_materializes_current_cycle_l8_and_manifest_handoff(
     assert len(audit_storage.audit_rows) == len(audit_bundle.audit_records)
     assert len(audit_storage.replay_rows) == len(audit_bundle.replay_records)
     assert formal_commit.state.input_evidence["cycle_id"] == "CYCLE_20260416"
-    assert formal_commit.state.input_evidence["symbols"] == ["600519.SH", "000001.SZ"]
-    assert formal_commit.state.input_evidence["input_tables"] == [
-        "main.stg_daily",
-        "main.stg_stock_basic",
+    assert formal_commit.state.input_evidence["selection_ref"] == (
+        "cycle_candidate_selection:CYCLE_20260416"
+    )
+    assert formal_commit.state.input_evidence["entity_ids"] == [
+        "ENT_STOCK_600519.SH",
+        "ENT_STOCK_000001.SZ",
     ]
-    assert formal_commit.state.input_evidence["source_run_ids"] == [
-        "daily-run-20260416",
-        "stock-basic-run-20260416",
+    assert formal_commit.state.input_evidence["canonical_dataset_refs"] == [
+        "price_bar",
+        "security_master",
     ]
-    assert formal_commit.state.input_evidence["partition_date"] == "2026-04-16"
-    assert formal_commit.state.input_evidence["source"] != "legacy-test-input"
+    assert "stg_" not in json.dumps(formal_commit.state.input_evidence)
     pool_payload = next(
         call["payload"]
         for call in publish_recorder.commit_calls
         if call["object_key"] == "official_alpha_pool"
     )
     committed_entities = set(pool_payload["selected_entities"])
-    assert "600519.SH" in committed_entities
+    assert "ENT_STOCK_600519.SH" in committed_entities
     assert "ENT_P2_A" not in committed_entities
     assert "ENT_P2_B" not in committed_entities
 
 
-def test_p2_dry_run_handoff_uses_data_platform_tushare_provider(
+def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
     dagster_module: object,
     dagster_instance: object,
     stub_policy_path: str,
@@ -135,7 +136,7 @@ def test_p2_dry_run_handoff_uses_data_platform_tushare_provider(
     from orchestrator_adapters import p2_dry_run
     from orchestrator_adapters.p2_dry_run import (
         AuditEvalPersistencePort,
-        DataPlatformTushareCurrentCycleInputProvider,
+        DataPlatformCanonicalCurrentCycleInputProvider,
         DefaultReasonerRuntimeGateway,
         P2DryRunAssetFactoryProvider,
     )
@@ -147,20 +148,29 @@ def test_p2_dry_run_handoff_uses_data_platform_tushare_provider(
             {"candidate_id": 11, "ts_code": "000001.SZ", "submitted_by": "candidate-freeze"},
         )
 
-    def fake_rows(
-        *,
-        cycle_date: date,
-        symbols: Sequence[str],
+    def fake_current_cycle_inputs(
+        cycle_id: str,
+        selection_ref: str,
+        candidate_ids: Sequence[str | int],
+        as_of_snapshot: Mapping[str, int] | None = None,
     ) -> tuple[dict[str, object], ...]:
-        assert cycle_date == date(2026, 4, 16)
-        assert tuple(symbols) == ("600519.SH", "000001.SZ")
+        assert cycle_id == "CYCLE_20260416"
+        assert selection_ref == "cycle_candidate_selection:CYCLE_20260416"
+        assert tuple(candidate_ids) == ("600519.SH", "000001.SZ")
+        assert as_of_snapshot is None
         return (
-            _tushare_staging_row("000001.SZ", -0.4),
-            _tushare_staging_row("600519.SH", 1.2),
+            _canonical_input_row("ENT_STOCK_600519.SH", 0.012),
+            _canonical_input_row("ENT_STOCK_000001.SZ", -0.004),
         )
 
     monkeypatch.setattr(p2_dry_run, "_load_frozen_candidate_symbols", fake_candidates)
-    monkeypatch.setattr(p2_dry_run, "_load_tushare_staging_rows", fake_rows)
+    import data_platform.cycle as data_platform_cycle
+
+    monkeypatch.setattr(
+        data_platform_cycle,
+        "load_current_cycle_inputs",
+        fake_current_cycle_inputs,
+    )
 
     reasoner_recorder = _ReasonerRecorder()
     publish_recorder = _PublishRecorder()
@@ -175,7 +185,7 @@ def test_p2_dry_run_handoff_uses_data_platform_tushare_provider(
             storage_factory=lambda: audit_storage,
         ),
     )
-    assert isinstance(provider.input_provider, DataPlatformTushareCurrentCycleInputProvider)
+    assert isinstance(provider.input_provider, DataPlatformCanonicalCurrentCycleInputProvider)
     defs = build_definitions(
         module_factories=[
             _fake_phase0_provider(dagster),
@@ -200,18 +210,17 @@ def test_p2_dry_run_handoff_uses_data_platform_tushare_provider(
     committed_entities = set(pool_payload["selected_entities"])
 
     assert result.success is True
-    assert formal_commit.state.input_evidence["source"] == (
-        "data-platform:tushare-staging:frozen-candidates"
-    )
     assert formal_commit.state.input_evidence["candidate_ids"] == [10, 11]
-    assert formal_commit.state.input_evidence["symbols"] == ["600519.SH", "000001.SZ"]
-    assert formal_commit.state.input_evidence["source_run_ids"] == [
-        "daily-run-000001.SZ",
-        "daily-run-600519.SH",
-        "stock-basic-run-000001.SZ",
-        "stock-basic-run-600519.SH",
+    assert formal_commit.state.input_evidence["entity_ids"] == [
+        "ENT_STOCK_600519.SH",
+        "ENT_STOCK_000001.SZ",
     ]
-    assert committed_entities == {"600519.SH", "000001.SZ"}
+    assert formal_commit.state.input_evidence["canonical_snapshot_ids"] == {
+        "price_bar": 101,
+        "security_master": 202,
+    }
+    assert _no_source_specific_input_evidence(formal_commit.state.input_evidence)
+    assert committed_entities == {"ENT_STOCK_600519.SH", "ENT_STOCK_000001.SZ"}
     assert "ENT_P2_A" not in committed_entities
     assert "ENT_P2_B" not in committed_entities
     assert publish_recorder.manifest_provenance is not None
@@ -444,7 +453,7 @@ def test_audit_eval_persistence_port_durable_retry_recovers_half_written_audit_r
     assert replay_count == len(expected_replay_ids)
 
 
-def test_data_platform_tushare_provider_loads_current_cycle_evidence(
+def test_data_platform_canonical_provider_loads_current_cycle_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from orchestrator_adapters import p2_dry_run
@@ -456,44 +465,50 @@ def test_data_platform_tushare_provider_loads_current_cycle_evidence(
             {"candidate_id": 11, "ts_code": "000001.SZ", "submitted_by": "candidate-freeze"},
         )
 
-    def fake_rows(
-        *,
-        cycle_date: date,
-        symbols: Sequence[str],
+    def fake_current_cycle_inputs(
+        cycle_id: str,
+        selection_ref: str,
+        candidate_ids: Sequence[str | int],
+        as_of_snapshot: Mapping[str, int] | None = None,
     ) -> tuple[dict[str, object], ...]:
-        assert cycle_date == date(2026, 4, 16)
-        assert tuple(symbols) == ("600519.SH", "000001.SZ")
+        assert cycle_id == "CYCLE_20260416"
+        assert selection_ref == "cycle_candidate_selection:CYCLE_20260416"
+        assert tuple(candidate_ids) == ("600519.SH", "000001.SZ")
+        assert as_of_snapshot is None
         return (
-            _tushare_staging_row("000001.SZ", -0.4),
-            _tushare_staging_row("600519.SH", 1.2),
+            _canonical_input_row("ENT_STOCK_600519.SH", 0.012),
+            _canonical_input_row("ENT_STOCK_000001.SZ", -0.004),
         )
 
     monkeypatch.setattr(p2_dry_run, "_load_frozen_candidate_symbols", fake_candidates)
-    monkeypatch.setattr(p2_dry_run, "_load_tushare_staging_rows", fake_rows)
+    import data_platform.cycle as data_platform_cycle
 
-    inputs = p2_dry_run.DataPlatformTushareCurrentCycleInputProvider().load_current_cycle_inputs(
+    monkeypatch.setattr(
+        data_platform_cycle,
+        "load_current_cycle_inputs",
+        fake_current_cycle_inputs,
+    )
+
+    inputs = p2_dry_run.DataPlatformCanonicalCurrentCycleInputProvider().load_current_cycle_inputs(
         cycle_id="CYCLE_20260416",
         graph_snapshot="graph://snapshot/current",
     )
 
     assert [bundle.entity_id for bundle in inputs.feature_bundles] == [
-        "600519.SH",
-        "000001.SZ",
+        "ENT_STOCK_600519.SH",
+        "ENT_STOCK_000001.SZ",
     ]
     assert inputs.evidence["candidate_ids"] == [10, 11]
-    assert inputs.evidence["symbols"] == ["600519.SH", "000001.SZ"]
-    assert inputs.evidence["input_tables"] == ["main.stg_daily", "main.stg_stock_basic"]
-    assert inputs.evidence["source_run_ids"] == [
-        "daily-run-000001.SZ",
-        "daily-run-600519.SH",
-        "stock-basic-run-000001.SZ",
-        "stock-basic-run-600519.SH",
+    assert inputs.evidence["entity_ids"] == [
+        "ENT_STOCK_600519.SH",
+        "ENT_STOCK_000001.SZ",
     ]
-    assert inputs.evidence["raw_loaded_at"] == [
-        "2026-04-16 16:00:00",
-        "2026-04-16 16:01:00",
-    ]
-    assert inputs.evidence["source"] == "data-platform:tushare-staging:frozen-candidates"
+    assert inputs.evidence["canonical_dataset_refs"] == ["price_bar", "security_master"]
+    assert inputs.evidence["canonical_snapshot_ids"] == {
+        "price_bar": 101,
+        "security_master": 202,
+    }
+    assert _no_source_specific_input_evidence(inputs.evidence)
 
 
 @pytest.mark.parametrize("marker", ["ENT_P2_A", "ENT_P2_B", "synthetic-current-cycle"])
@@ -631,22 +646,24 @@ class _StaticCurrentCycleInputProvider:
             feature_bundles=(
                 FeatureSignalBundle(
                     cycle_id=cycle_id,
-                    entity_id="600519.SH",
+                    entity_id="ENT_STOCK_600519.SH",
                     feature_values={"momentum": 0.012, "close": 1700.0},
                     signal_values={
-                        "source": "tushare-staging",
+                        "origin": "canonical-current-cycle",
                         "trade_date": "2026-04-16",
+                        "canonical_dataset_refs": ["price_bar", "security_master"],
                     },
                     graph_features={"graph_snapshot_ref": graph_snapshot},
                     feature_weight_multiplier={"momentum": 1.0, "close": 1.0},
                 ),
                 FeatureSignalBundle(
                     cycle_id=cycle_id,
-                    entity_id="000001.SZ",
+                    entity_id="ENT_STOCK_000001.SZ",
                     feature_values={"momentum": -0.004, "close": 11.0},
                     signal_values={
-                        "source": "tushare-staging",
+                        "origin": "canonical-current-cycle",
                         "trade_date": "2026-04-16",
+                        "canonical_dataset_refs": ["price_bar", "security_master"],
                     },
                     graph_features={"graph_snapshot_ref": graph_snapshot},
                     feature_weight_multiplier={"momentum": 1.0, "close": 1.0},
@@ -655,13 +672,20 @@ class _StaticCurrentCycleInputProvider:
             evidence={
                 "cycle_id": cycle_id,
                 "trade_date": "2026-04-16",
-                "symbols": ["600519.SH", "000001.SZ"],
-                "candidate_count": 2,
-                "input_tables": ["main.stg_daily", "main.stg_stock_basic"],
-                "source_run_ids": ["daily-run-20260416", "stock-basic-run-20260416"],
-                "raw_loaded_at": ["2026-04-16T16:00:00", "2026-04-16T16:01:00"],
-                "partition_date": "2026-04-16",
-                "source": "data-platform:tushare-staging:frozen-candidates",
+                "selection_ref": f"cycle_candidate_selection:{cycle_id}",
+                "candidate_ids": [10, 11],
+                "entity_ids": ["ENT_STOCK_600519.SH", "ENT_STOCK_000001.SZ"],
+                "canonical_dataset_refs": ["price_bar", "security_master"],
+                "canonical_snapshot_ids": {"price_bar": 101, "security_master": 202},
+                "row_count": 2,
+                "lineage_refs": [
+                    f"cycle:{cycle_id}",
+                    f"selection:cycle_candidate_selection:{cycle_id}",
+                    "candidate:10",
+                    "candidate:11",
+                    "canonical:price_bar@101",
+                    "canonical:security_master@202",
+                ],
             },
         )
 
@@ -917,6 +941,44 @@ def _tushare_staging_row(ts_code: str, pct_chg: float) -> dict[str, object]:
         "stock_basic_source_run_id": f"stock-basic-run-{ts_code}",
         "stock_basic_raw_loaded_at": "2026-04-16 16:01:00",
     }
+
+
+def _canonical_input_row(entity_id: str, return_1d: float) -> dict[str, object]:
+    return {
+        "entity_id": entity_id,
+        "trade_date": "2026-04-16",
+        "close": 1700.0 if entity_id.endswith("600519.SH") else 11.0,
+        "pre_close": 1680.0 if entity_id.endswith("600519.SH") else 11.1,
+        "return_1d": return_1d,
+        "volume": 1200.0 if entity_id.endswith("600519.SH") else 2200.0,
+        "amount": 2100.0 if entity_id.endswith("600519.SH") else 3100.0,
+        "market": "main",
+        "industry": "liquor" if entity_id.endswith("600519.SH") else "banking",
+        "canonical_dataset_refs": ["price_bar", "security_master"],
+        "canonical_snapshot_ids": {"price_bar": 101, "security_master": 202},
+        "lineage_refs": [
+            "cycle:CYCLE_20260416",
+            "selection:cycle_candidate_selection:CYCLE_20260416",
+            f"candidate:{entity_id}",
+            "canonical:price_bar@101",
+            "canonical:security_master@202",
+        ],
+    }
+
+
+def _no_source_specific_input_evidence(evidence: Mapping[str, object]) -> bool:
+    serialized = json.dumps(evidence, sort_keys=True, default=str).lower()
+    return not any(
+        marker in serialized
+        for marker in (
+            "stg_daily",
+            "stg_stock_basic",
+            "tushare-staging",
+            "doc_api",
+            "source_run_id",
+            "raw_loaded_at",
+        )
+    )
 
 
 def _seed_tushare_staging_tables(connection: Any) -> None:

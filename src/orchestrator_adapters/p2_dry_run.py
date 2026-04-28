@@ -23,8 +23,8 @@ _RECOMMENDATION_OBJECT_KEY = "recommendation_snapshot"
 _REQUIRED_RECOMMENDATION_LAYERS = frozenset({"L4", "L6", "L7", "L8"})
 _FORBIDDEN_PROVENANCE_MARKERS = ("smoke", "fixture", "historical")
 _FORBIDDEN_INPUT_MARKERS = (*_FORBIDDEN_PROVENANCE_MARKERS, "synthetic", "ent_p2")
-_INPUT_TABLE_DAILY = "main.stg_daily"
-_INPUT_TABLE_STOCK_BASIC = "main.stg_stock_basic"
+_LEGACY_INPUT_TABLE_DAILY = "main.stg_daily"
+_LEGACY_INPUT_TABLE_STOCK_BASIC = "main.stg_stock_basic"
 
 
 class P2ReasonerUnavailable(RuntimeError):
@@ -416,7 +416,7 @@ class DataPlatformTushareCurrentCycleInputProvider:
             "symbols": list(symbols),
             "candidate_ids": [candidate["candidate_id"] for candidate in selected_candidates],
             "candidate_count": len(selected_candidates),
-            "input_tables": [_INPUT_TABLE_DAILY, _INPUT_TABLE_STOCK_BASIC],
+            "input_tables": [_LEGACY_INPUT_TABLE_DAILY, _LEGACY_INPUT_TABLE_STOCK_BASIC],
             "input_row_count": len(rows),
             "source_run_ids": sorted(
                 {
@@ -437,6 +437,83 @@ class DataPlatformTushareCurrentCycleInputProvider:
             "partition_date": cycle_date.isoformat(),
             "source": "data-platform:tushare-staging:frozen-candidates",
         }
+        return P2CurrentCycleInputs(
+            feature_bundles=feature_bundles,
+            evidence=evidence,
+        )
+
+
+class DataPlatformCanonicalCurrentCycleInputProvider:
+    """Load P2 L1 inputs from provider-neutral data-platform canonical rows."""
+
+    def load_current_cycle_inputs(
+        self,
+        *,
+        cycle_id: str,
+        graph_snapshot: str,
+    ) -> P2CurrentCycleInputs:
+        selected_candidates = _load_frozen_candidate_symbols(cycle_id)
+        candidate_refs = tuple(str(candidate["ts_code"]) for candidate in selected_candidates)
+        if not candidate_refs:
+            raise ValueError("P2 dry-run requires frozen current-cycle canonical candidates")
+
+        selection_ref = f"cycle_candidate_selection:{cycle_id}"
+        from data_platform.cycle import load_current_cycle_inputs
+
+        rows = load_current_cycle_inputs(
+            cycle_id=cycle_id,
+            selection_ref=selection_ref,
+            candidate_ids=candidate_refs,
+        )
+        if len(rows) != len(candidate_refs):
+            raise ValueError(
+                "P2 canonical current-cycle input row count does not match "
+                "frozen candidates",
+            )
+
+        feature_bundles = tuple(
+            _feature_bundle_from_canonical_row(
+                cycle_id=cycle_id,
+                graph_snapshot=graph_snapshot,
+                row=row,
+            )
+            for row in rows
+        )
+        entity_ids = [str(row["entity_id"]) for row in rows]
+        canonical_dataset_refs = sorted(
+            {
+                str(dataset_ref)
+                for row in rows
+                for dataset_ref in _sequence_value(row.get("canonical_dataset_refs"))
+            }
+        )
+        canonical_snapshot_ids: dict[str, int] = {}
+        for row in rows:
+            for dataset_ref, snapshot_id in _mapping_value(
+                row.get("canonical_snapshot_ids")
+            ).items():
+                canonical_snapshot_ids[str(dataset_ref)] = int(snapshot_id)
+        lineage_refs = sorted(
+            {
+                str(lineage_ref)
+                for row in rows
+                for lineage_ref in _sequence_value(row.get("lineage_refs"))
+            }
+        )
+        evidence = {
+            "cycle_id": cycle_id,
+            "trade_date": _cycle_date(cycle_id).isoformat(),
+            "selection_ref": selection_ref,
+            "candidate_ids": [
+                int(candidate["candidate_id"]) for candidate in selected_candidates
+            ],
+            "entity_ids": entity_ids,
+            "canonical_dataset_refs": canonical_dataset_refs,
+            "canonical_snapshot_ids": canonical_snapshot_ids,
+            "row_count": len(rows),
+            "lineage_refs": lineage_refs,
+        }
+        _assert_provider_neutral_input_evidence(evidence)
         return P2CurrentCycleInputs(
             feature_bundles=feature_bundles,
             evidence=evidence,
@@ -565,7 +642,7 @@ class P2DryRunAssetFactoryProvider:
         require_cycle_tag: bool = False,
     ) -> None:
         self.reasoner_gateway = reasoner_gateway or DefaultReasonerRuntimeGateway()
-        self.input_provider = input_provider or DataPlatformTushareCurrentCycleInputProvider()
+        self.input_provider = input_provider or DataPlatformCanonicalCurrentCycleInputProvider()
         self.publish_port_factory = publish_port_factory or DataPlatformIcebergPublishPort
         self.audit_persistence_port = audit_persistence_port or AuditEvalPersistencePort()
         self.phase2_pool_failure_rate_provider = phase2_pool_failure_rate_provider
@@ -1290,10 +1367,50 @@ def _feature_bundle_from_tushare_row(
     )
 
 
+def _feature_bundle_from_canonical_row(
+    *,
+    cycle_id: str,
+    graph_snapshot: str,
+    row: Mapping[str, object],
+) -> object:
+    entity_id = str(row["entity_id"])
+    return_1d = _float_value(row.get("return_1d"))
+    close = _float_value(row.get("close"))
+    pre_close = _float_value(row.get("pre_close"))
+    volume = _float_value(row.get("volume"))
+    amount = _float_value(row.get("amount"))
+    return _feature_bundle(
+        cycle_id,
+        entity_id,
+        return_1d,
+        graph_snapshot,
+        feature_values={
+            "momentum": return_1d,
+            "close": close,
+            "pre_close": pre_close,
+            "volume": volume,
+            "amount": amount,
+        },
+        signal_values={
+            "origin": "canonical-current-cycle",
+            "trade_date": str(row.get("trade_date")),
+            "canonical_dataset_refs": list(
+                _sequence_value(row.get("canonical_dataset_refs"))
+            ),
+            "canonical_snapshot_ids": dict(
+                _mapping_value(row.get("canonical_snapshot_ids"))
+            ),
+            "lineage_refs": list(_sequence_value(row.get("lineage_refs"))),
+            "industry": row.get("industry"),
+            "market": row.get("market"),
+        },
+    )
+
+
 def _feature_bundle(
     cycle_id: str,
     entity_id: str,
-    momentum: float,
+    momentum: float | None,
     graph_snapshot: str,
     *,
     feature_values: Mapping[str, float] | None = None,
@@ -1304,7 +1421,7 @@ def _feature_bundle(
     return FeatureSignalBundle(
         cycle_id=cycle_id,
         entity_id=entity_id,
-        feature_values=dict(feature_values or {"momentum": momentum}),
+        feature_values=dict(feature_values or {"momentum": momentum or 0.0}),
         signal_values=dict(signal_values or {"source": "current-cycle-test-input"}),
         graph_features={"graph_snapshot_ref": graph_snapshot},
         feature_weight_multiplier={
@@ -1401,6 +1518,34 @@ def _payload_row_count(payload: Mapping[str, Any]) -> int:
     if isinstance(items, Sequence) and not isinstance(items, (str, bytes, bytearray)):
         return len(items)
     return 1
+
+
+def _sequence_value(value: object) -> tuple[object, ...]:
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(value)
+    return ()
+
+
+def _mapping_value(value: object) -> Mapping[str, object]:
+    if isinstance(value, Mapping):
+        return value
+    return {}
+
+
+def _assert_provider_neutral_input_evidence(evidence: Mapping[str, object]) -> None:
+    serialized = json.dumps(evidence, sort_keys=True, default=str).lower()
+    forbidden = (
+        "stg_daily",
+        "stg_stock_basic",
+        "tushare-staging",
+        "doc_api",
+        "source_run_id",
+        "raw_loaded_at",
+    )
+    leaked = [marker for marker in forbidden if marker in serialized]
+    if leaked:
+        msg = "P2 canonical current-cycle evidence leaked source-specific markers: "
+        raise ValueError(msg + ", ".join(leaked))
 
 
 def _float_value(value: object) -> float:
