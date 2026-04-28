@@ -42,10 +42,11 @@ def test_production_daily_cycle_status_is_truthful_blocker() -> None:
     assert "configured_graph_phase1_runtime" in status.runtime_blockers
     assert "configured_reasoner_runtime" in status.runtime_blockers
     assert "not_live_gds_zero_skip_proof" not in status.non_claims
-    assert "not_live_pg_current_cycle_freeze_proof" in status.non_claims
     assert "CYCLE_20260415" not in status_payload
     assert provider.status() == status
     assert provider.p2_provider.require_cycle_tag is True
+    assert "not_full_production_dagster_current_cycle_freeze_proof" in status.non_claims
+    assert "not_live_pg_current_cycle_freeze_proof" not in status.non_claims
     assert provider.p2_provider.input_provider.__class__.__name__ == (
         "DataPlatformCanonicalCurrentCycleInputProvider"
     )

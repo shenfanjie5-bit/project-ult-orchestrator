@@ -403,7 +403,7 @@ def production_daily_cycle_status() -> ProductionDailyCycleProviderStatus:
         current_cycle_binding=CURRENT_CYCLE_BINDING,
         non_claims=(
             "not_p5_shadow_run_readiness",
-            "not_live_pg_current_cycle_freeze_proof",
+            "not_full_production_dagster_current_cycle_freeze_proof",
             "not_production_daily_cycle_pass_certificate",
             "not_fixed_cycle_20260415_replay",
         ),
