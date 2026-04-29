@@ -187,7 +187,7 @@ class ProductionPhase0Provider:
 
         from data_platform.cycle import CurrentCycleReadinessProvider
 
-        graph_status_provider = self.graph_status_provider or _FailClosedGraphStatusProvider()
+        graph_status_provider = self._resolve_graph_status_provider()
         return {
             DATA_READINESS_RESOURCE_KEY: dagster.ResourceDefinition.hardcoded_resource(
                 CurrentCycleReadinessProvider(),
@@ -196,6 +196,36 @@ class ProductionPhase0Provider:
                 dagster.ResourceDefinition.hardcoded_resource(graph_status_provider)
             ),
         }
+
+    def _resolve_graph_status_provider(self) -> GraphStatusProvider:
+        """Return the graph status provider, defaulting to a graph-engine
+        env-driven runtime when no override was supplied.
+
+        Wiring contract:
+        * If the constructor received an explicit ``graph_status_provider``,
+          honour it verbatim (test seams + integration overrides).
+        * Otherwise import graph-engine's
+          ``build_graph_phase0_status_provider`` and let it construct a real
+          ``Neo4jGraphStatusProvider`` from the live ``NEO4J_*`` /
+          ``DATABASE_URL`` environment.
+        * If graph-engine cannot be imported (deployment without the optional
+          dep) or env vars are absent, fall through to
+          ``_FailClosedGraphStatusProvider`` so Phase 0 fails closed at run
+          time instead of silently passing.
+        """
+
+        if self.graph_status_provider is not None:
+            return self.graph_status_provider
+
+        try:
+            from graph_engine.providers import build_graph_phase0_status_provider
+        except ImportError:
+            return _FailClosedGraphStatusProvider()
+
+        try:
+            return build_graph_phase0_status_provider()
+        except EnvironmentError:
+            return _FailClosedGraphStatusProvider()
 
 
 class ProductionAuditEvalProvider:

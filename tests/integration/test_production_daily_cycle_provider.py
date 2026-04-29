@@ -138,8 +138,21 @@ def test_production_daily_cycle_provider_supplies_real_surface_asset_names(
 
 def test_production_daily_cycle_default_graph_runtime_fails_closed(
     dagster_module: object,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Default Phase 0 wiring falls through to fail-closed when no graph-engine
+    runtime can be constructed from env (M2.3a-1 boundary).
+
+    Two fall-through paths are exercised here:
+    1. graph_engine not installed in this venv (ImportError caught).
+    2. graph_engine installed but env vars (NEO4J_PASSWORD / DATABASE_URL)
+       absent, so build_graph_phase0_status_runtime_from_env() raises
+       EnvironmentError which the orchestrator catches.
+    """
     pytest.importorskip("main_core", reason="main-core is required for P2 assets")
+
+    monkeypatch.delenv("NEO4J_PASSWORD", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
 
     from orchestrator_adapters.production_daily_cycle import (
         GRAPH_STATUS_PROVIDER_RESOURCE_KEY,
