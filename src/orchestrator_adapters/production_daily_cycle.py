@@ -441,9 +441,47 @@ def production_daily_cycle_status() -> ProductionDailyCycleProviderStatus:
 
 
 def _default_graph_phase1_provider() -> object:
-    from graph_engine.providers import build_graph_phase1_provider
+    """Resolve the Phase 1 provider, mirroring the M2.3a-1 Phase 0 pattern.
 
-    return build_graph_phase1_provider()
+    1. Try graph-engine's ``build_graph_phase1_provider()`` (env-driven —
+       constructs a real :class:`GraphPhase1Service` with cross-module
+       adapters).
+    2. On ``ImportError`` (graph-engine / data-platform / main-core not
+       installed in this venv) or ``EnvironmentError`` (env vars absent),
+       fall back to a Phase 1 provider with an explicit
+       :class:`_FailClosedGraphPhase1Runtime` so the daily cycle still
+       fails closed at asset evaluation time rather than crashing during
+       `Definitions` construction.
+    """
+
+    try:
+        from graph_engine.providers import build_graph_phase1_provider
+    except ImportError:
+        return _build_fail_closed_graph_phase1_provider()
+
+    try:
+        return build_graph_phase1_provider()
+    except EnvironmentError:
+        return _build_fail_closed_graph_phase1_provider()
+
+
+def _build_fail_closed_graph_phase1_provider() -> object:
+    """Construct a Phase 1 provider whose runtime is the fail-closed stub.
+
+    Used when graph-engine cannot env-construct a real runtime so the
+    orchestrator still produces a Definitions-loadable provider whose
+    ``graph_promotion`` / ``graph_snapshot`` assets raise at run time.
+
+    Calls graph-engine's public
+    ``build_fail_closed_graph_phase1_provider`` factory rather than
+    importing the private ``_FailClosedGraphPhase1Runtime`` class across
+    the module boundary (orchestrator/CLAUDE.md prohibits importing
+    sub-module private internals).
+    """
+
+    from graph_engine.providers import build_fail_closed_graph_phase1_provider
+
+    return build_fail_closed_graph_phase1_provider()
 
 
 def _collect(method_name: str, providers: Sequence[object]) -> tuple[object, ...]:
