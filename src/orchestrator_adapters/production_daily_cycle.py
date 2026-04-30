@@ -60,6 +60,7 @@ PHASE2_POOL_FAILURE_RATE_METRIC_ARTIFACT_ENV: Final[str] = (
 )
 DATA_READINESS_RESOURCE_KEY: Final[str] = "data_readiness"
 GRAPH_STATUS_PROVIDER_RESOURCE_KEY: Final[str] = "graph_status_provider"
+GRAPH_PHASE1_RUNTIME_RESOURCE_KEY: Final[str] = "graph_phase1_runtime"
 AUDIT_RETROSPECTIVE_RUNTIME_RESOURCE_KEY: Final[str] = (
     "audit_eval_retrospective_hook_runtime"
 )
@@ -479,9 +480,140 @@ def _build_fail_closed_graph_phase1_provider() -> object:
     sub-module private internals).
     """
 
-    from graph_engine.providers import build_fail_closed_graph_phase1_provider
+    try:
+        from graph_engine.providers import build_fail_closed_graph_phase1_provider
+    except ImportError:
+        return _LocalFailClosedGraphPhase1AssetFactoryProvider()
 
     return build_fail_closed_graph_phase1_provider()
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalGraphPromotionAssetRequest:
+    cycle_id: str
+    selection_ref: str
+    phase0_readiness: object
+    candidate_freeze: object
+    graph_status: object
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalGraphSnapshotAssetRequest:
+    cycle_id: str
+    world_state_ref: str
+    graph_generation_id: int
+    promotion: object
+
+
+class _LocalFailClosedGraphPhase1Runtime:
+    def promote_graph(self, request: object) -> object:
+        raise RuntimeError(
+            "Graph Phase 1 runtime dependencies are not configured; install "
+            "graph-engine and provide real candidate_reader, canonical_writer, "
+            "Neo4j client/status, regime_reader, and formal artifact snapshot "
+            "writer resources.",
+        )
+
+    def compute_graph_snapshot(self, request: object) -> object:
+        raise RuntimeError(
+            "Graph Phase 1 runtime dependencies are not configured; install "
+            "graph-engine and provide real candidate_reader, canonical_writer, "
+            "Neo4j client/status, regime_reader, and formal artifact snapshot "
+            "writer resources.",
+        )
+
+
+class _LocalFailClosedGraphPhase1AssetFactoryProvider:
+    """Definitions-loadable Phase 1 surface when graph-engine is unavailable."""
+
+    def __init__(
+        self,
+        *,
+        resource_key: str = GRAPH_PHASE1_RUNTIME_RESOURCE_KEY,
+        world_state_ref: str = "world-state:latest",
+    ) -> None:
+        self.resource_key = resource_key
+        self.world_state_ref = world_state_ref
+
+    def get_assets(self) -> tuple[object, ...]:
+        import dagster
+
+        from orchestrator.jobs.phase1 import (
+            PHASE1_GRAPH_PROMOTION_ASSET_KEY,
+            PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+            PHASE1_GROUP_NAME,
+        )
+
+        resource_key = self.resource_key
+        world_state_ref = self.world_state_ref
+
+        @dagster.asset(
+            name=PHASE1_GRAPH_PROMOTION_ASSET_KEY,
+            group_name=PHASE1_GROUP_NAME,
+            required_resource_keys={resource_key},
+        )
+        def graph_promotion(
+            context,
+            phase0_readiness_ping: object,
+            candidate_freeze: object,
+            graph_status: object,
+        ) -> object:
+            runtime = getattr(context.resources, resource_key)
+            cycle_id = _cycle_id_from_mapping(candidate_freeze)
+            selection_ref = _selection_ref_from_mapping(candidate_freeze)
+            return runtime.promote_graph(
+                _LocalGraphPromotionAssetRequest(
+                    cycle_id=cycle_id,
+                    selection_ref=selection_ref,
+                    phase0_readiness=phase0_readiness_ping,
+                    candidate_freeze=candidate_freeze,
+                    graph_status=graph_status,
+                ),
+            )
+
+        @dagster.asset(
+            name=PHASE1_GRAPH_SNAPSHOT_ASSET_KEY,
+            group_name=PHASE1_GROUP_NAME,
+            required_resource_keys={resource_key},
+        )
+        def graph_snapshot(context, graph_promotion: object) -> object:
+            runtime = getattr(context.resources, resource_key)
+            cycle_id = _required_attr_or_mapping_value(
+                graph_promotion,
+                "cycle_id",
+                "graph_promotion",
+            )
+            graph_generation_id = _required_int_attr_or_mapping_value(
+                graph_promotion,
+                "graph_generation_id",
+                "graph_promotion",
+            )
+            return runtime.compute_graph_snapshot(
+                _LocalGraphSnapshotAssetRequest(
+                    cycle_id=cycle_id,
+                    world_state_ref=_optional_attr_or_mapping_value(
+                        graph_promotion,
+                        "world_state_ref",
+                    )
+                    or world_state_ref,
+                    graph_generation_id=graph_generation_id,
+                    promotion=graph_promotion,
+                ),
+            )
+
+        return (graph_promotion, graph_snapshot)
+
+    def get_checks(self) -> tuple[object, ...]:
+        return ()
+
+    def get_resources(self) -> dict[str, object]:
+        import dagster
+
+        return {
+            self.resource_key: dagster.ResourceDefinition.hardcoded_resource(
+                _LocalFailClosedGraphPhase1Runtime(),
+            ),
+        }
 
 
 def _collect(method_name: str, providers: Sequence[object]) -> tuple[object, ...]:
@@ -497,6 +629,31 @@ def _cycle_id_from_mapping(value: Mapping[str, object]) -> str:
     if not isinstance(cycle_id, str) or not cycle_id.strip():
         raise ValueError("candidate_freeze output must include cycle_id")
     return cycle_id
+
+
+def _selection_ref_from_mapping(value: Mapping[str, object]) -> str:
+    selection_ref = value.get("selection_ref")
+    if not isinstance(selection_ref, str) or not selection_ref.strip():
+        raise ValueError("candidate_freeze output must include selection_ref")
+    return selection_ref
+
+
+def _required_attr_or_mapping_value(value: object, key: str, subject: str) -> str:
+    field = _mapping_or_attr(value, key)
+    if not isinstance(field, str) or not field.strip():
+        raise RuntimeError(f"{subject} {key} must be a string")
+    return field
+
+
+def _required_int_attr_or_mapping_value(value: object, key: str, subject: str) -> int:
+    field = _mapping_or_attr(value, key)
+    if isinstance(field, bool) or not isinstance(field, int):
+        raise RuntimeError(f"{subject} {key} must be an integer")
+    return field
+
+
+def _optional_attr_or_mapping_value(value: object, key: str) -> object:
+    return _mapping_or_attr(value, key)
 
 
 def _cycle_id_from_context(context: object) -> str | None:

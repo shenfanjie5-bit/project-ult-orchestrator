@@ -65,13 +65,7 @@ def test_phase1_provider_falls_back_when_graph_engine_not_importable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If graph_engine.providers import fails entirely, the orchestrator
-    falls through without raising. (We cannot easily simulate this in a
-    venv that already has graph-engine, but the code path is exercised by
-    the ImportError branch in production deployment without graph-engine
-    installed — covered by static review here, plus the next test.)"""
-
-    # Smoke: confirm the fall-back helper itself works when called directly.
-    pytest.importorskip("graph_engine.providers")
+    still returns a Definitions-loadable fail-closed Phase 1 provider."""
 
     from orchestrator_adapters.production_daily_cycle import (
         _build_fail_closed_graph_phase1_provider,
@@ -81,7 +75,42 @@ def test_phase1_provider_falls_back_when_graph_engine_not_importable(
     resources = provider.get_resources()
     runtime_key = next(iter(resources))
     runtime = resources[runtime_key].resource_fn(None)
-    assert runtime.__class__.__name__ == "_FailClosedGraphPhase1Runtime"
+    assert runtime.__class__.__name__ in {
+        "_FailClosedGraphPhase1Runtime",
+        "_LocalFailClosedGraphPhase1Runtime",
+    }
+
+
+def test_phase1_status_keeps_runtime_blocker_until_proof_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Factory construction is not enough to clear the gate-facing blocker.
+
+    M2.6 closure is artifact-backed by ``graph_promotion`` materialization
+    evidence, not by lazy adapter/client object construction.
+    """
+
+    import sys
+    import types
+
+    fake_graph_engine = types.ModuleType("graph_engine")
+    fake_providers = types.ModuleType("graph_engine.providers")
+    fake_providers.build_graph_phase1_runtime_from_env = (  # type: ignore[attr-defined]
+        lambda: object()
+    )
+
+    monkeypatch.setitem(sys.modules, "graph_engine", fake_graph_engine)
+    monkeypatch.setitem(sys.modules, "graph_engine.providers", fake_providers)
+
+    from orchestrator_adapters.production_daily_cycle import (
+        production_daily_cycle_status,
+    )
+
+    status = production_daily_cycle_status()
+
+    assert status.blocked is True
+    assert "configured_graph_phase1_runtime" in status.runtime_blockers
+    assert "configured_reasoner_runtime" in status.runtime_blockers
 
 
 def test_phase1_provider_uses_real_runtime_when_env_set_and_modules_available(
@@ -159,7 +188,7 @@ def test_phase1_provider_uses_real_runtime_when_env_set_and_modules_available(
     )
     fake_dp_adapters.PostgresCandidateDeltaReader = _FakeCandidateReader  # type: ignore[attr-defined]
     fake_dp_adapters.IcebergEntityAnchorReader = _FakeEntityReader  # type: ignore[attr-defined]
-    fake_dp_adapters.StubCanonicalGraphWriter = _FakeCanonicalWriter  # type: ignore[attr-defined]
+    fake_dp_adapters.IcebergCanonicalGraphWriter = _FakeCanonicalWriter  # type: ignore[attr-defined]
 
     fake_mc = types.ModuleType("main_core")
     fake_mc_adapters = types.ModuleType("main_core.adapters")
