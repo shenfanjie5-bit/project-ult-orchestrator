@@ -433,6 +433,7 @@ class TemporalParityFakeProvider:
         candidate_freeze = assets[PHASE0_CANDIDATE_FREEZE_ASSET_KEY]
         graph_status = assets[PHASE0_GRAPH_STATUS_ASSET_KEY]
         graph_snapshot = assets[PHASE1_GRAPH_SNAPSHOT_ASSET_KEY]
+        l7 = assets[PHASE2_STAGE_KEYS[-2]]
         l8 = assets[PHASE2_STAGE_KEYS[-1]]
         formal_objects_commit = assets[PHASE3_FORMAL_COMMIT_ASSET_KEY]
         cycle_publish_manifest = assets[PHASE3_MANIFEST_ASSET_KEY]

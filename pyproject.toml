@@ -38,11 +38,20 @@ contracts-schemas = [
     "project-ult-contracts @ git+https://github.com/shenfanjie5-bit/project-ult-contracts.git@v0.1.2",
 ]
 # Shared regression fixtures bundled with project-ult-audit-eval.
-# Pinned to v0.2.4 (project-wide canonical_entity_id format
+# Pinned to v0.2.5 (project-wide canonical_entity_id format
 # reconciliation: every shared case now uses the runtime-aligned dot
 # form ENT_STOCK_<symbol>.<exchange>; iron rule #6).
 shared-fixtures = [
-    "project-ult-audit-eval @ git+https://github.com/shenfanjie5-bit/project-ult-audit-eval.git@v0.2.4",
+    "project-ult-audit-eval @ git+https://github.com/shenfanjie5-bit/project-ult-audit-eval.git@v0.2.5",
+]
+# Full GitHub Actions lane sibling runtime pins. GitHub Actions checks out
+# only orchestrator, so these direct refs provide the runtime modules.
+full-ci = [
+    "project-ult-contracts @ git+https://github.com/shenfanjie5-bit/project-ult-contracts.git@v0.1.3",
+    "project-ult-main-core @ git+https://github.com/shenfanjie5-bit/project-ult-main-core.git@efaa4f62027401ee85d1a20095ab4f7ff29e6994",
+    "project-ult-data-platform @ git+https://github.com/shenfanjie5-bit/project-ult-data-platform.git@52b8dd50dd8504cb024e46e4bcda5f6a9544628c",
+    "project-ult-graph-engine @ git+https://github.com/shenfanjie5-bit/project-ult-graph-engine.git@9dde6f80af996d661eaf86aef73acbc43f8300e9",
+    "project-ult-reasoner-runtime @ git+https://github.com/shenfanjie5-bit/project-ult-reasoner-runtime.git@025db5ba4b67aaa76545fd0b942e5b8856fcae89",
 ]
 
 [project.scripts]
@@ -60,6 +69,7 @@ addopts = "-q"
 pythonpath = [
     "src",
     "../main-core/src",
+    "../graph-engine",
     "../reasoner-runtime",
     "../contracts/src",
     "../data-platform/src",
