@@ -126,6 +126,7 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
     dagster_instance: object,
     stub_policy_path: str,
     tmp_dbt_project: Path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dagster = dagster_module
@@ -182,6 +183,7 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
     reasoner_recorder = _ReasonerRecorder()
     publish_recorder = _PublishRecorder()
     audit_storage = InMemoryFormalAuditStorageAdapter()
+    frontend_artifact_root = tmp_path / "frontend-api"
     provider = P2DryRunAssetFactoryProvider(
         reasoner_gateway=DefaultReasonerRuntimeGateway(
             client_factory=reasoner_recorder.client_factory,
@@ -192,6 +194,7 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
             storage_factory=lambda: audit_storage,
         ),
         frozen_selection_reader=frozen_reader,
+        frontend_api_artifact_root=frontend_artifact_root,
     )
     assert isinstance(provider.input_provider, DataPlatformCanonicalCurrentCycleInputProvider)
     defs = build_definitions(
@@ -238,9 +241,13 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
         if call["metadata"]["layer"] == "L6"
     ]
     graph_features = l6_payloads[0]["context"]["feature_bundle"]["graph_features"]
+    artifact_path = (
+        frontend_artifact_root / "ex3-graph-signals" / "CYCLE_20260416.json"
+    )
     assert graph_features["ex3_graph_signals"] == [ex3_graph_signal]
     assert graph_features["same_cycle_ex3_graph_signals"] == [ex3_graph_signal]
     assert _no_unsafe_ex3_graph_signal_fields(graph_features)
+    assert json.loads(artifact_path.read_text(encoding="utf-8")) == [ex3_graph_signal]
 
 
 def test_p2_dry_run_hard_stops_without_llm_before_l8_or_publish(
@@ -472,6 +479,7 @@ def test_audit_eval_persistence_port_durable_retry_recovers_half_written_audit_r
 
 def test_data_platform_canonical_provider_loads_current_cycle_evidence(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     from orchestrator_adapters import p2_dry_run
 
@@ -493,6 +501,7 @@ def test_data_platform_canonical_provider_loads_current_cycle_evidence(
     frozen_reader = _FrozenSelectionReader(
         (
             _frozen_selection_row(10, {"ts_code": "600519.SH"}, payload_type="Ex-1"),
+            _frozen_selection_row(40, _ex3_graph_delta_payload(), payload_type="Ex-3"),
             _frozen_selection_row(11, {"ts_code": "000001.SZ"}, payload_type="Ex-1"),
         )
     )
@@ -506,6 +515,7 @@ def test_data_platform_canonical_provider_loads_current_cycle_evidence(
 
     input_provider = p2_dry_run.DataPlatformCanonicalCurrentCycleInputProvider(
         frozen_selection_reader=frozen_reader,
+        frontend_api_artifact_root=tmp_path / "frontend-api",
     )
     inputs = input_provider.load_current_cycle_inputs(
         cycle_id="CYCLE_20260416",
@@ -527,6 +537,16 @@ def test_data_platform_canonical_provider_loads_current_cycle_evidence(
         "security_master": 202,
     }
     assert _no_source_specific_input_evidence(inputs.evidence)
+    bundle_payload = inputs.feature_bundles[0].model_dump(mode="json")
+    assert bundle_payload["graph_features"]["same_cycle_ex3_graph_signals"] == [
+        _safe_ex3_graph_signal()
+    ]
+    artifact_path = (
+        tmp_path / "frontend-api" / "ex3-graph-signals" / "CYCLE_20260416.json"
+    )
+    assert json.loads(artifact_path.read_text(encoding="utf-8")) == [
+        _safe_ex3_graph_signal()
+    ]
 
 
 @pytest.mark.parametrize("marker", ["ENT_P2_A", "ENT_P2_B", "synthetic-current-cycle"])
@@ -630,6 +650,105 @@ def test_load_frozen_ex3_graph_signals_sanitizes_accepted_contract_payload() -> 
         },
     )
     assert _no_unsafe_ex3_graph_signal_fields(signals)
+
+
+def test_write_frontend_api_ex3_graph_signals_artifact_sanitizes_payload(
+    tmp_path: Path,
+) -> None:
+    from orchestrator_adapters import p2_dry_run
+
+    ex3_payload = _ex3_graph_delta_payload(
+        properties={
+            "impact_score": 0.91,
+            "safe_details": {
+                "direction": "positive",
+                "source": "drop",
+                "quality": "confirmed",
+            },
+            "provider": "drop",
+            "provider_model": "drop",
+            "providerName": "drop",
+            "source_url": "drop",
+            "sourceUrl": "drop",
+            "raw_payload": "drop",
+            "rawPayload": "drop",
+            "log_lines": ["drop"],
+            "logLines": ["drop"],
+            "secret_key": "drop",
+            "secretKey": "drop",
+            "traceback": "drop",
+            "queue_id": "drop",
+            "queuePrivateId": "drop",
+            "candidate_queue_id": "drop",
+            "private_id": "drop",
+            "metadata": {"drop": True},
+        }
+    )
+    rows = [
+        _frozen_selection_row(30, {"ts_code": "600519.SH"}, payload_type="Ex-1"),
+        _frozen_selection_row(
+            31,
+            ex3_payload,
+            payload_type="Ex-3",
+            validation_status="rejected",
+        ),
+        _frozen_selection_row(32, ex3_payload, payload_type="Ex-3"),
+    ]
+
+    artifact_path = p2_dry_run.write_frontend_api_ex3_graph_signals_artifact(
+        "CYCLE_20260416",
+        reader=_FrozenSelectionReader(rows),
+        artifact_root=tmp_path / "frontend-api",
+    )
+
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert artifact_path == (
+        tmp_path / "frontend-api" / "ex3-graph-signals" / "CYCLE_20260416.json"
+    )
+    assert payload == [
+        {
+            "cycle_id": "CYCLE_20260416",
+            "candidate_id": 32,
+            "delta_id": "delta-ex3-bridge",
+            "delta_type": "edge_add",
+            "selection_ref": "cycle_candidate_selection:CYCLE_20260416",
+            "source_node": "ENT_STOCK_600519.SH",
+            "target_node": "ENT_STOCK_000001.SZ",
+            "relation_type": "supplier_of",
+            "properties": {
+                "impact_score": 0.91,
+                "safe_details": {
+                    "direction": "positive",
+                    "quality": "confirmed",
+                },
+            },
+            "evidence_refs": ["evidence-ex3-bridge"],
+        }
+    ]
+    assert _only_frontend_api_ex3_graph_signal_keys(payload)
+
+
+def test_write_frontend_api_ex3_graph_signals_artifact_rejects_cross_cycle_signal(
+    tmp_path: Path,
+) -> None:
+    from orchestrator_adapters import p2_dry_run
+
+    graph_signal = {
+        **_safe_ex3_graph_signal(),
+        "cycle_id": "CYCLE_20260415",
+    }
+    artifact_root = tmp_path / "frontend-api"
+
+    with pytest.raises(ValueError, match="cycle_id must match current cycle"):
+        p2_dry_run._write_frontend_api_ex3_graph_signals_artifact(
+            cycle_id="CYCLE_20260416",
+            graph_signals=(graph_signal,),
+            artifact_root=artifact_root,
+        )
+
+    assert not (
+        artifact_root / "ex3-graph-signals" / "CYCLE_20260416.json"
+    ).exists()
 
 
 @pytest.mark.parametrize("marker", ["ENT_P2_A", "ENT_P2_B", "synthetic-current-cycle"])
@@ -1106,6 +1225,68 @@ def _no_unsafe_ex3_graph_signal_fields(value: object) -> bool:
             "rejection_reason",
         )
     )
+
+
+def _only_frontend_api_ex3_graph_signal_keys(value: object) -> bool:
+    allowed_signal_keys = {
+        "cycle_id",
+        "candidate_id",
+        "delta_id",
+        "delta_type",
+        "selection_ref",
+        "source_node",
+        "target_node",
+        "relation_type",
+        "properties",
+        "evidence_refs",
+    }
+    if not isinstance(value, list):
+        return False
+    for signal in value:
+        if not isinstance(signal, dict):
+            return False
+        if set(signal) != allowed_signal_keys:
+            return False
+        properties = signal.get("properties")
+        if not isinstance(properties, dict):
+            return False
+        if _has_forbidden_frontend_api_ex3_property_key(properties):
+            return False
+    return True
+
+
+def _has_forbidden_frontend_api_ex3_property_key(value: object) -> bool:
+    forbidden_exact = {
+        "candidate_queue_id",
+        "ingest_seq",
+        "log",
+        "logs",
+        "metadata",
+        "private_id",
+        "provider",
+        "queue_id",
+        "raw_payload",
+        "raw_text",
+        "secret",
+        "source",
+        "traceback",
+    }
+    forbidden_tokens = {"log", "logs", "provider", "queue", "raw", "secret", "source"}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = str(key).strip().lower()
+            key_tokens = {
+                token
+                for token in normalized.replace("-", "_").replace(".", "_").split("_")
+                if token
+            }
+            if normalized in forbidden_exact or key_tokens & forbidden_tokens:
+                return True
+            if _has_forbidden_frontend_api_ex3_property_key(item):
+                return True
+    if isinstance(value, list):
+        return any(_has_forbidden_frontend_api_ex3_property_key(item) for item in value)
+    return False
 
 
 def _no_source_specific_input_evidence(evidence: Mapping[str, object]) -> bool:

@@ -1,0 +1,18 @@
+[
+  {
+    "candidate_id": 40,
+    "cycle_id": "CYCLE_20260416",
+    "delta_id": "delta-ex3-bridge",
+    "delta_type": "edge_add",
+    "evidence_refs": [
+      "evidence-ex3-bridge"
+    ],
+    "properties": {
+      "impact_score": 0.91
+    },
+    "relation_type": "supplier_of",
+    "selection_ref": "cycle_candidate_selection:CYCLE_20260416",
+    "source_node": "ENT_STOCK_600519.SH",
+    "target_node": "ENT_STOCK_000001.SZ"
+  }
+]
