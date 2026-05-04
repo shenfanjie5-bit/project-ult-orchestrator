@@ -154,6 +154,45 @@ def test_production_daily_cycle_default_graph_runtime_fails_closed(
         graph_status_provider.get_graph_status(candidate_freeze={}, cycle_id="CYCLE_20260427")
 
 
+def test_default_graph_phase1_provider_falls_back_for_env_misconfiguration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator_adapters.production_daily_cycle import _default_graph_phase1_provider
+
+    fail_closed_provider = object()
+
+    def build_graph_phase1_provider() -> object:
+        raise EnvironmentError("Phase 1 runtime requires NEO4J_PASSWORD")
+
+    fake_graph_providers = SimpleNamespace(
+        build_graph_phase1_provider=build_graph_phase1_provider,
+        build_fail_closed_graph_phase1_provider=lambda: fail_closed_provider,
+    )
+    monkeypatch.setitem(sys.modules, "graph_engine.providers", fake_graph_providers)
+
+    assert _default_graph_phase1_provider() is fail_closed_provider
+
+
+@pytest.mark.parametrize("exc_type", [RuntimeError, ValueError])
+def test_default_graph_phase1_provider_propagates_unrelated_builder_errors(
+    exc_type: type[Exception],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from orchestrator_adapters.production_daily_cycle import _default_graph_phase1_provider
+
+    def build_graph_phase1_provider() -> object:
+        raise exc_type("unrelated provider bug")
+
+    fake_graph_providers = SimpleNamespace(
+        build_graph_phase1_provider=build_graph_phase1_provider,
+        build_fail_closed_graph_phase1_provider=lambda: object(),
+    )
+    monkeypatch.setitem(sys.modules, "graph_engine.providers", fake_graph_providers)
+
+    with pytest.raises(exc_type, match="unrelated provider bug"):
+        _default_graph_phase1_provider()
+
+
 def test_production_candidate_freeze_requires_cycle_tag_before_side_effect() -> None:
     from orchestrator_adapters.production_daily_cycle import _require_cycle_id_from_context
 

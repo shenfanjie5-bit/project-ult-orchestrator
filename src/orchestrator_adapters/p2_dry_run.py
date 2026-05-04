@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 import hashlib
 import json
+from math import isfinite
 import os
 from typing import Any, Protocol, cast
 
@@ -25,6 +26,27 @@ _FORBIDDEN_PROVENANCE_MARKERS = ("smoke", "fixture", "historical")
 _FORBIDDEN_INPUT_MARKERS = (*_FORBIDDEN_PROVENANCE_MARKERS, "synthetic", "ent_p2")
 _LEGACY_INPUT_TABLE_DAILY = "main.stg_daily"
 _LEGACY_INPUT_TABLE_STOCK_BASIC = "main.stg_stock_basic"
+_EX3_PAYLOAD_TYPE = "Ex-3"
+_EX3_QUEUE_ENVELOPE_FIELDS = frozenset({"payload_type", "submitted_by"})
+_UNSAFE_EX3_GRAPH_PROPERTY_KEYS = frozenset(
+    {
+        "chunk",
+        "ingest_seq",
+        "light_rag_artifact",
+        "metadata",
+        "payload_type",
+        "raw_text",
+        "rejection_reason",
+        "submitted_at",
+        "submitted_by",
+        "validation_status",
+    }
+)
+_UNSAFE_EX3_GRAPH_PROPERTY_KEY_MARKERS = ("blob", "chunk", "light_rag", "lightrag", "raw_text")
+_MAX_EX3_GRAPH_SIGNAL_STRING_LENGTH = 2048
+_MAX_EX3_GRAPH_SIGNAL_COLLECTION_ITEMS = 50
+_MAX_EX3_GRAPH_SIGNAL_DEPTH = 4
+_DROP_EX3_GRAPH_SIGNAL_VALUE = object()
 
 
 class P2ReasonerUnavailable(RuntimeError):
@@ -155,6 +177,16 @@ class P2InputProvider(Protocol):
         graph_snapshot: str,
     ) -> P2CurrentCycleInputs:
         """Return feature bundles and source evidence for one frozen cycle."""
+
+
+class FrozenSelectionReader(Protocol):
+    """Read frozen data-platform selection rows for one current cycle."""
+
+    def load_frozen_selection_rows(
+        self,
+        cycle_id: str,
+    ) -> tuple[Mapping[str, object], ...]:
+        """Return candidate_queue rows selected for one frozen cycle."""
 
 
 class P2AuditPersistencePort(Protocol):
@@ -378,8 +410,54 @@ class DefaultReasonerRuntimeGateway:
         )
 
 
+class DataPlatformFrozenSelectionReader:
+    """Default frozen-selection reader over data-platform's repository boundary."""
+
+    def load_frozen_selection_rows(
+        self,
+        cycle_id: str,
+    ) -> tuple[Mapping[str, object], ...]:
+        from data_platform.cycle.repository import _create_engine, _text
+
+        engine = _create_engine()
+        try:
+            with engine.connect() as connection:
+                rows = (
+                    connection.execute(
+                        _text(
+                            """
+                            SELECT
+                                selection.candidate_id,
+                                candidate_queue.payload,
+                                candidate_queue.payload_type,
+                                candidate_queue.submitted_by,
+                                candidate_queue.validation_status
+                            FROM data_platform.cycle_candidate_selection AS selection
+                            JOIN data_platform.candidate_queue AS candidate_queue
+                              ON candidate_queue.id = selection.candidate_id
+                            WHERE selection.cycle_id = :cycle_id
+                            ORDER BY candidate_queue.ingest_seq ASC
+                            """
+                        ),
+                        {"cycle_id": cycle_id},
+                    )
+                    .mappings()
+                    .all()
+                )
+        finally:
+            engine.dispose()
+        return tuple(dict(row) for row in rows)
+
+
 class DataPlatformTushareCurrentCycleInputProvider:
     """Load P2 L1 inputs from frozen candidates and Tushare staging views."""
+
+    def __init__(
+        self,
+        *,
+        frozen_selection_reader: FrozenSelectionReader | None = None,
+    ) -> None:
+        self._frozen_selection_reader = frozen_selection_reader
 
     def load_current_cycle_inputs(
         self,
@@ -388,10 +466,17 @@ class DataPlatformTushareCurrentCycleInputProvider:
         graph_snapshot: str,
     ) -> P2CurrentCycleInputs:
         cycle_date = _cycle_date(cycle_id)
-        selected_candidates = _load_frozen_candidate_symbols(cycle_id)
+        selected_candidates = _load_frozen_candidate_symbols(
+            cycle_id,
+            reader=self._frozen_selection_reader,
+        )
         symbols = tuple(candidate["ts_code"] for candidate in selected_candidates)
         if not symbols:
             raise ValueError("P2 dry-run requires frozen current-cycle Tushare symbols")
+        ex3_graph_signals = _load_frozen_ex3_graph_signals(
+            cycle_id,
+            reader=self._frozen_selection_reader,
+        )
 
         rows = _load_tushare_staging_rows(cycle_date=cycle_date, symbols=symbols)
         rows_by_symbol = {str(row["ts_code"]): row for row in rows}
@@ -407,6 +492,7 @@ class DataPlatformTushareCurrentCycleInputProvider:
                 cycle_id=cycle_id,
                 graph_snapshot=graph_snapshot,
                 row=rows_by_symbol[symbol],
+                ex3_graph_signals=ex3_graph_signals,
             )
             for symbol in symbols
         )
@@ -446,16 +532,30 @@ class DataPlatformTushareCurrentCycleInputProvider:
 class DataPlatformCanonicalCurrentCycleInputProvider:
     """Load P2 L1 inputs from provider-neutral data-platform canonical rows."""
 
+    def __init__(
+        self,
+        *,
+        frozen_selection_reader: FrozenSelectionReader | None = None,
+    ) -> None:
+        self._frozen_selection_reader = frozen_selection_reader
+
     def load_current_cycle_inputs(
         self,
         *,
         cycle_id: str,
         graph_snapshot: str,
     ) -> P2CurrentCycleInputs:
-        selected_candidates = _load_frozen_candidate_symbols(cycle_id)
+        selected_candidates = _load_frozen_candidate_symbols(
+            cycle_id,
+            reader=self._frozen_selection_reader,
+        )
         candidate_refs = tuple(str(candidate["ts_code"]) for candidate in selected_candidates)
         if not candidate_refs:
             raise ValueError("P2 dry-run requires frozen current-cycle canonical candidates")
+        ex3_graph_signals = _load_frozen_ex3_graph_signals(
+            cycle_id,
+            reader=self._frozen_selection_reader,
+        )
 
         selection_ref = f"cycle_candidate_selection:{cycle_id}"
         from data_platform.cycle import load_current_cycle_inputs
@@ -476,6 +576,7 @@ class DataPlatformCanonicalCurrentCycleInputProvider:
                 cycle_id=cycle_id,
                 graph_snapshot=graph_snapshot,
                 row=row,
+                ex3_graph_signals=ex3_graph_signals,
             )
             for row in rows
         )
@@ -637,12 +738,15 @@ class P2DryRunAssetFactoryProvider:
         publish_port_factory: Callable[[], P2PublishPort] | None = None,
         audit_persistence_port: P2AuditPersistencePort | None = None,
         phase2_pool_failure_rate_provider: object | None = None,
+        frozen_selection_reader: FrozenSelectionReader | None = None,
         provide_llm_health_probe: bool = True,
         provide_io_manager: bool = True,
         require_cycle_tag: bool = False,
     ) -> None:
         self.reasoner_gateway = reasoner_gateway or DefaultReasonerRuntimeGateway()
-        self.input_provider = input_provider or DataPlatformCanonicalCurrentCycleInputProvider()
+        self.input_provider = input_provider or DataPlatformCanonicalCurrentCycleInputProvider(
+            frozen_selection_reader=frozen_selection_reader,
+        )
         self.publish_port_factory = publish_port_factory or DataPlatformIcebergPublishPort
         self.audit_persistence_port = audit_persistence_port or AuditEvalPersistencePort()
         self.phase2_pool_failure_rate_provider = phase2_pool_failure_rate_provider
@@ -1224,42 +1328,25 @@ def _non_llm_evidence(cycle_id: str, layer: str, object_key: str) -> P2LayerEvid
     )
 
 
-def _load_frozen_candidate_symbols(cycle_id: str) -> tuple[dict[str, object], ...]:
-    from data_platform.cycle.repository import _create_engine, _text
-
-    engine = _create_engine()
-    try:
-        with engine.connect() as connection:
-            rows = (
-                connection.execute(
-                    _text(
-                        """
-                        SELECT
-                            selection.candidate_id,
-                            candidate_queue.payload,
-                            candidate_queue.submitted_by
-                        FROM data_platform.cycle_candidate_selection AS selection
-                        JOIN data_platform.candidate_queue AS candidate_queue
-                          ON candidate_queue.id = selection.candidate_id
-                        WHERE selection.cycle_id = :cycle_id
-                        ORDER BY candidate_queue.ingest_seq ASC
-                        """
-                    ),
-                    {"cycle_id": cycle_id},
-                )
-                .mappings()
-                .all()
-            )
-    finally:
-        engine.dispose()
-
+def _load_frozen_candidate_symbols(
+    cycle_id: str,
+    *,
+    reader: FrozenSelectionReader | None = None,
+) -> tuple[dict[str, object], ...]:
+    rows = _load_frozen_selection_rows(cycle_id, reader=reader)
     candidates: list[dict[str, object]] = []
     for row in rows:
-        payload = row["payload"]
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        if not isinstance(payload, Mapping):
-            raise ValueError("P2 frozen candidate payload must be a JSON object")
+        row_payload_type = _selection_row_payload_type(row)
+        if row_payload_type is not None and _is_ex3_payload_type(row_payload_type):
+            continue
+        payload = _selection_payload_mapping(
+            row["payload"],
+            "P2 frozen candidate payload must be a JSON object",
+        )
+        if row_payload_type is None and _is_ex3_payload_type(
+            _payload_envelope_payload_type(payload)
+        ):
+            continue
         ts_code = payload.get("ts_code") or payload.get("entity_id")
         if not isinstance(ts_code, str) or not ts_code.strip():
             raise ValueError("P2 frozen candidate payload requires ts_code")
@@ -1274,6 +1361,192 @@ def _load_frozen_candidate_symbols(cycle_id: str) -> tuple[dict[str, object], ..
             }
         )
     return tuple(candidates)
+
+
+def _load_frozen_ex3_graph_signals(
+    cycle_id: str,
+    *,
+    reader: FrozenSelectionReader | None = None,
+) -> tuple[dict[str, object], ...]:
+    selection_ref = f"cycle_candidate_selection:{cycle_id}"
+    rows = _load_frozen_selection_rows(cycle_id, reader=reader)
+    graph_signals: list[dict[str, object]] = []
+    for row in rows:
+        row_payload_type = _selection_row_payload_type(row)
+        if row_payload_type is not None and not _is_ex3_payload_type(row_payload_type):
+            continue
+        if not _is_accepted_selection_row(row):
+            continue
+        payload = _selection_payload_mapping(
+            row["payload"],
+            "P2 frozen Ex-3 graph signal payload must be a JSON object",
+        )
+        if row_payload_type is None and not _is_ex3_payload_type(
+            _payload_envelope_payload_type(payload)
+        ):
+            continue
+        payload = _ex3_contract_payload(payload)
+        delta = _validated_ex3_candidate_graph_delta(payload)
+        graph_signals.append(
+            _ex3_graph_signal_summary(
+                delta,
+                cycle_id=cycle_id,
+                candidate_id=int(row["candidate_id"]),
+                selection_ref=selection_ref,
+            )
+        )
+    return tuple(graph_signals)
+
+
+def _load_frozen_selection_rows(
+    cycle_id: str,
+    *,
+    reader: FrozenSelectionReader | None,
+) -> tuple[Mapping[str, object], ...]:
+    selection_reader = reader or DataPlatformFrozenSelectionReader()
+    return tuple(selection_reader.load_frozen_selection_rows(cycle_id))
+
+
+def _selection_payload_mapping(payload: object, error_message: str) -> Mapping[str, object]:
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, Mapping):
+        raise ValueError(error_message)
+    return cast(Mapping[str, object], payload)
+
+
+def _selection_row_payload_type(row: Mapping[str, object]) -> str | None:
+    return _non_empty_text(row.get("payload_type"))
+
+
+def _payload_envelope_payload_type(payload: Mapping[str, object]) -> str | None:
+    return _non_empty_text(payload.get("payload_type"))
+
+
+def _is_ex3_payload_type(payload_type: str | None) -> bool:
+    return payload_type is not None and payload_type.strip().lower() == "ex-3"
+
+
+def _is_accepted_selection_row(row: Mapping[str, object]) -> bool:
+    validation_status = _non_empty_text(row.get("validation_status"))
+    return validation_status is None or validation_status.lower() == "accepted"
+
+
+def _non_empty_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _ex3_contract_payload(payload: object) -> object:
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if not isinstance(payload, Mapping):
+        raise ValueError("P2 frozen Ex-3 graph signal payload must be a JSON object")
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in _EX3_QUEUE_ENVELOPE_FIELDS
+    }
+
+
+def _validated_ex3_candidate_graph_delta(payload: object) -> object:
+    from contracts.schemas import CandidateGraphDelta, Ex3CandidateGraphDelta
+
+    candidate_delta = CandidateGraphDelta.model_validate(payload)
+    return Ex3CandidateGraphDelta.model_validate(candidate_delta.model_dump(mode="python"))
+
+
+def _ex3_graph_signal_summary(
+    delta: object,
+    *,
+    cycle_id: str,
+    candidate_id: int,
+    selection_ref: str,
+) -> dict[str, object]:
+    return {
+        "delta_id": str(getattr(delta, "delta_id")),
+        "delta_type": _contract_value(getattr(delta, "delta_type")),
+        "source_node": str(getattr(delta, "source_node")),
+        "target_node": str(getattr(delta, "target_node")),
+        "relation_type": str(getattr(delta, "relation_type")),
+        "properties": _sanitize_ex3_graph_properties(
+            cast(Mapping[str, object], getattr(delta, "properties"))
+        ),
+        "evidence_refs": [str(ref) for ref in getattr(delta, "evidence")],
+        "cycle_id": cycle_id,
+        "candidate_id": candidate_id,
+        "selection_ref": selection_ref,
+    }
+
+
+def _contract_value(value: object) -> str:
+    enum_value = getattr(value, "value", None)
+    if enum_value is not None:
+        return str(enum_value)
+    return str(value)
+
+
+def _sanitize_ex3_graph_properties(properties: Mapping[str, object]) -> dict[str, object]:
+    sanitized: dict[str, object] = {}
+    for key, value in properties.items():
+        if _unsafe_ex3_graph_property_key(key):
+            continue
+        safe_value = _safe_ex3_graph_signal_value(value, depth=0)
+        if safe_value is _DROP_EX3_GRAPH_SIGNAL_VALUE:
+            continue
+        sanitized[str(key)] = safe_value
+    return sanitized
+
+
+def _safe_ex3_graph_signal_value(value: object, *, depth: int) -> object:
+    if depth > _MAX_EX3_GRAPH_SIGNAL_DEPTH:
+        return _DROP_EX3_GRAPH_SIGNAL_VALUE
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if isfinite(value) else _DROP_EX3_GRAPH_SIGNAL_VALUE
+    if isinstance(value, str):
+        if len(value) > _MAX_EX3_GRAPH_SIGNAL_STRING_LENGTH:
+            return _DROP_EX3_GRAPH_SIGNAL_VALUE
+        return value
+    if isinstance(value, Mapping):
+        safe_mapping: dict[str, object] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= _MAX_EX3_GRAPH_SIGNAL_COLLECTION_ITEMS:
+                break
+            if not isinstance(key, str) or _unsafe_ex3_graph_property_key(key):
+                continue
+            safe_item = _safe_ex3_graph_signal_value(item, depth=depth + 1)
+            if safe_item is not _DROP_EX3_GRAPH_SIGNAL_VALUE:
+                safe_mapping[key] = safe_item
+        return safe_mapping
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        safe_items: list[object] = []
+        for index, item in enumerate(value):
+            if index >= _MAX_EX3_GRAPH_SIGNAL_COLLECTION_ITEMS:
+                break
+            safe_item = _safe_ex3_graph_signal_value(item, depth=depth + 1)
+            if safe_item is not _DROP_EX3_GRAPH_SIGNAL_VALUE:
+                safe_items.append(safe_item)
+        return safe_items
+    return _DROP_EX3_GRAPH_SIGNAL_VALUE
+
+
+def _unsafe_ex3_graph_property_key(key: object) -> bool:
+    if not isinstance(key, str):
+        return True
+    normalized = key.strip().lower()
+    if not normalized or normalized.startswith("_") or normalized.startswith("private"):
+        return True
+    if normalized in _UNSAFE_EX3_GRAPH_PROPERTY_KEYS:
+        return True
+    if normalized.endswith("_metadata"):
+        return True
+    return any(marker in normalized for marker in _UNSAFE_EX3_GRAPH_PROPERTY_KEY_MARKERS)
 
 
 def _load_tushare_staging_rows(
@@ -1334,6 +1607,7 @@ def _feature_bundle_from_tushare_row(
     cycle_id: str,
     graph_snapshot: str,
     row: Mapping[str, object],
+    ex3_graph_signals: Sequence[Mapping[str, object]] = (),
 ) -> object:
     ts_code = str(row["ts_code"])
     pct_chg = _float_value(row.get("pct_chg"))
@@ -1364,6 +1638,7 @@ def _feature_bundle_from_tushare_row(
             "industry": row.get("industry"),
             "market": row.get("market"),
         },
+        ex3_graph_signals=ex3_graph_signals,
     )
 
 
@@ -1372,6 +1647,7 @@ def _feature_bundle_from_canonical_row(
     cycle_id: str,
     graph_snapshot: str,
     row: Mapping[str, object],
+    ex3_graph_signals: Sequence[Mapping[str, object]] = (),
 ) -> object:
     entity_id = str(row["entity_id"])
     return_1d = _float_value(row.get("return_1d"))
@@ -1404,6 +1680,7 @@ def _feature_bundle_from_canonical_row(
             "industry": row.get("industry"),
             "market": row.get("market"),
         },
+        ex3_graph_signals=ex3_graph_signals,
     )
 
 
@@ -1415,15 +1692,24 @@ def _feature_bundle(
     *,
     feature_values: Mapping[str, float] | None = None,
     signal_values: Mapping[str, object] | None = None,
+    ex3_graph_signals: Sequence[Mapping[str, object]] = (),
 ) -> object:
     from main_core.common.schemas import FeatureSignalBundle
+
+    graph_signal_summaries = [dict(signal) for signal in ex3_graph_signals]
 
     return FeatureSignalBundle(
         cycle_id=cycle_id,
         entity_id=entity_id,
         feature_values=dict(feature_values or {"momentum": momentum or 0.0}),
         signal_values=dict(signal_values or {"source": "current-cycle-test-input"}),
-        graph_features={"graph_snapshot_ref": graph_snapshot},
+        graph_features={
+            "graph_snapshot_ref": graph_snapshot,
+            "ex3_graph_signals": graph_signal_summaries,
+            "same_cycle_ex3_graph_signals": [
+                dict(signal) for signal in graph_signal_summaries
+            ],
+        },
         feature_weight_multiplier={
             feature_name: 1.0
             for feature_name in dict(feature_values or {"momentum": momentum})
@@ -1641,9 +1927,12 @@ def _model_dump(value: object) -> object:
 
 __all__ = [
     "AuditEvalPersistencePort",
+    "DataPlatformCanonicalCurrentCycleInputProvider",
+    "DataPlatformFrozenSelectionReader",
     "DataPlatformIcebergPublishPort",
     "DataPlatformTushareCurrentCycleInputProvider",
     "DefaultReasonerRuntimeGateway",
+    "FrozenSelectionReader",
     "P2AlphaAnalysisPayload",
     "P2CommittedFormalObjects",
     "P2CurrentCycleInputs",

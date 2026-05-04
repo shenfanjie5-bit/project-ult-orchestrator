@@ -133,20 +133,12 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
     from audit_eval.audit import InMemoryFormalAuditStorageAdapter
     from orchestrator.definitions import build_definitions
     from orchestrator.jobs.phase3 import PHASE3_FORMAL_COMMIT_ASSET_KEY
-    from orchestrator_adapters import p2_dry_run
     from orchestrator_adapters.p2_dry_run import (
         AuditEvalPersistencePort,
         DataPlatformCanonicalCurrentCycleInputProvider,
         DefaultReasonerRuntimeGateway,
         P2DryRunAssetFactoryProvider,
     )
-
-    def fake_candidates(cycle_id: str) -> tuple[dict[str, object], ...]:
-        assert cycle_id == "CYCLE_20260416"
-        return (
-            {"candidate_id": 10, "ts_code": "600519.SH", "submitted_by": "candidate-freeze"},
-            {"candidate_id": 11, "ts_code": "000001.SZ", "submitted_by": "candidate-freeze"},
-        )
 
     def fake_current_cycle_inputs(
         cycle_id: str,
@@ -163,7 +155,22 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
             _canonical_input_row("ENT_STOCK_000001.SZ", -0.004),
         )
 
-    monkeypatch.setattr(p2_dry_run, "_load_frozen_candidate_symbols", fake_candidates)
+    ex3_graph_signal = _safe_ex3_graph_signal()
+    frozen_reader = _FrozenSelectionReader(
+        (
+            _frozen_selection_row(10, {"ts_code": "600519.SH"}, payload_type="Ex-1"),
+            _frozen_selection_row(
+                40,
+                {
+                    **_ex3_graph_delta_payload(),
+                    "payload_type": "Ex-3",
+                    "submitted_by": "candidate-freeze",
+                },
+                payload_type="Ex-3",
+            ),
+            _frozen_selection_row(11, {"ts_code": "000001.SZ"}, payload_type="Ex-1"),
+        )
+    )
     import data_platform.cycle as data_platform_cycle
 
     monkeypatch.setattr(
@@ -184,6 +191,7 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
         audit_persistence_port=AuditEvalPersistencePort(
             storage_factory=lambda: audit_storage,
         ),
+        frozen_selection_reader=frozen_reader,
     )
     assert isinstance(provider.input_provider, DataPlatformCanonicalCurrentCycleInputProvider)
     defs = build_definitions(
@@ -224,6 +232,15 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
     assert "ENT_P2_A" not in committed_entities
     assert "ENT_P2_B" not in committed_entities
     assert publish_recorder.manifest_provenance is not None
+    l6_payloads = [
+        json.loads(str(call["messages"][1]["content"]))
+        for call in reasoner_recorder.calls
+        if call["metadata"]["layer"] == "L6"
+    ]
+    graph_features = l6_payloads[0]["context"]["feature_bundle"]["graph_features"]
+    assert graph_features["ex3_graph_signals"] == [ex3_graph_signal]
+    assert graph_features["same_cycle_ex3_graph_signals"] == [ex3_graph_signal]
+    assert _no_unsafe_ex3_graph_signal_fields(graph_features)
 
 
 def test_p2_dry_run_hard_stops_without_llm_before_l8_or_publish(
@@ -458,13 +475,6 @@ def test_data_platform_canonical_provider_loads_current_cycle_evidence(
 ) -> None:
     from orchestrator_adapters import p2_dry_run
 
-    def fake_candidates(cycle_id: str) -> tuple[dict[str, object], ...]:
-        assert cycle_id == "CYCLE_20260416"
-        return (
-            {"candidate_id": 10, "ts_code": "600519.SH", "submitted_by": "candidate-freeze"},
-            {"candidate_id": 11, "ts_code": "000001.SZ", "submitted_by": "candidate-freeze"},
-        )
-
     def fake_current_cycle_inputs(
         cycle_id: str,
         selection_ref: str,
@@ -480,7 +490,12 @@ def test_data_platform_canonical_provider_loads_current_cycle_evidence(
             _canonical_input_row("ENT_STOCK_000001.SZ", -0.004),
         )
 
-    monkeypatch.setattr(p2_dry_run, "_load_frozen_candidate_symbols", fake_candidates)
+    frozen_reader = _FrozenSelectionReader(
+        (
+            _frozen_selection_row(10, {"ts_code": "600519.SH"}, payload_type="Ex-1"),
+            _frozen_selection_row(11, {"ts_code": "000001.SZ"}, payload_type="Ex-1"),
+        )
+    )
     import data_platform.cycle as data_platform_cycle
 
     monkeypatch.setattr(
@@ -489,7 +504,10 @@ def test_data_platform_canonical_provider_loads_current_cycle_evidence(
         fake_current_cycle_inputs,
     )
 
-    inputs = p2_dry_run.DataPlatformCanonicalCurrentCycleInputProvider().load_current_cycle_inputs(
+    input_provider = p2_dry_run.DataPlatformCanonicalCurrentCycleInputProvider(
+        frozen_selection_reader=frozen_reader,
+    )
+    inputs = input_provider.load_current_cycle_inputs(
         cycle_id="CYCLE_20260416",
         graph_snapshot="graph://snapshot/current",
     )
@@ -514,22 +532,104 @@ def test_data_platform_canonical_provider_loads_current_cycle_evidence(
 @pytest.mark.parametrize("marker", ["ENT_P2_A", "ENT_P2_B", "synthetic-current-cycle"])
 def test_load_frozen_candidate_symbols_rejects_synthetic_candidates(
     marker: str,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from data_platform.cycle import repository
+    from orchestrator_adapters import p2_dry_run
+
+    rows = [_frozen_selection_row(1, {"ts_code": marker}, payload_type="Ex-1")]
+
+    with pytest.raises(ValueError, match="synthetic|ENT_P2"):
+        p2_dry_run._load_frozen_candidate_symbols(
+            "CYCLE_20260416",
+            reader=_FrozenSelectionReader(rows),
+        )
+
+
+def test_load_frozen_candidate_symbols_skips_ex3_rows_in_mixed_freeze() -> None:
     from orchestrator_adapters import p2_dry_run
 
     rows = [
-        {
-            "candidate_id": 1,
-            "payload": json.dumps({"ts_code": marker}),
-            "submitted_by": "candidate-freeze",
-        }
+        _frozen_selection_row(10, {"ts_code": "600519.SH"}, payload_type="Ex-1"),
+        _frozen_selection_row(40, _ex3_graph_delta_payload(), payload_type="Ex-3"),
+        _frozen_selection_row(
+            11,
+            {"entity_id": "000001.SZ", "payload_type": "Ex-1"},
+            payload_type=None,
+        ),
+        _frozen_selection_row(
+            41,
+            {
+                **_ex3_graph_delta_payload(delta_id="delta-ex3-envelope"),
+                "payload_type": "Ex-3",
+            },
+            payload_type=None,
+        ),
     ]
-    monkeypatch.setattr(repository, "_create_engine", lambda: _FakeEngine(rows))
 
-    with pytest.raises(ValueError, match="synthetic|ENT_P2"):
-        p2_dry_run._load_frozen_candidate_symbols("CYCLE_20260416")
+    candidates = p2_dry_run._load_frozen_candidate_symbols(
+        "CYCLE_20260416",
+        reader=_FrozenSelectionReader(rows),
+    )
+
+    assert candidates == (
+        {"candidate_id": 10, "ts_code": "600519.SH", "submitted_by": "candidate-freeze"},
+        {"candidate_id": 11, "ts_code": "000001.SZ", "submitted_by": "candidate-freeze"},
+    )
+
+
+def test_load_frozen_ex3_graph_signals_sanitizes_accepted_contract_payload() -> None:
+    from orchestrator_adapters import p2_dry_run
+
+    payload = _ex3_graph_delta_payload(
+        properties={
+            "impact_score": 0.91,
+            "safe_details": {"direction": "positive", "chunk": "drop"},
+            "raw_text": "drop",
+            "chunk": {"text": "drop"},
+            "light_rag_artifact": {"artifact_id": "drop"},
+            "large_blob": "x" * 4096,
+            "metadata": {"source": "drop"},
+            "private_note": "drop",
+        }
+    )
+    envelope_payload = {
+        **payload,
+        "payload_type": "Ex-3",
+        "submitted_by": "candidate-freeze",
+    }
+    rows = [
+        _frozen_selection_row(38, envelope_payload, payload_type="Ex-1"),
+        _frozen_selection_row(
+            39,
+            envelope_payload,
+            payload_type=None,
+            validation_status="rejected",
+        ),
+        _frozen_selection_row(40, envelope_payload, payload_type=None),
+    ]
+
+    signals = p2_dry_run._load_frozen_ex3_graph_signals(
+        "CYCLE_20260416",
+        reader=_FrozenSelectionReader(rows),
+    )
+
+    assert signals == (
+        {
+            "delta_id": "delta-ex3-bridge",
+            "delta_type": "edge_add",
+            "source_node": "ENT_STOCK_600519.SH",
+            "target_node": "ENT_STOCK_000001.SZ",
+            "relation_type": "supplier_of",
+            "properties": {
+                "impact_score": 0.91,
+                "safe_details": {"direction": "positive"},
+            },
+            "evidence_refs": ["evidence-ex3-bridge"],
+            "cycle_id": "CYCLE_20260416",
+            "candidate_id": 40,
+            "selection_ref": "cycle_candidate_selection:CYCLE_20260416",
+        },
+    )
+    assert _no_unsafe_ex3_graph_signal_fields(signals)
 
 
 @pytest.mark.parametrize("marker", ["ENT_P2_A", "ENT_P2_B", "synthetic-current-cycle"])
@@ -695,42 +795,16 @@ class _FailingAuditPersistencePort:
         raise RuntimeError("audit storage unavailable")
 
 
-class _FakeEngine:
+class _FrozenSelectionReader:
     def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
-        self._rows = rows
-        self.disposed = False
+        self._rows = tuple(dict(row) for row in rows)
 
-    def connect(self) -> object:
-        return _FakeConnection(self._rows)
-
-    def dispose(self) -> None:
-        self.disposed = True
-
-
-class _FakeConnection:
-    def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
-        self._rows = rows
-
-    def __enter__(self) -> "_FakeConnection":
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        return None
-
-    def execute(self, statement: object, parameters: Mapping[str, object]) -> object:
-        assert parameters == {"cycle_id": "CYCLE_20260416"}
-        return _FakeResult(self._rows)
-
-
-class _FakeResult:
-    def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
-        self._rows = rows
-
-    def mappings(self) -> "_FakeResult":
-        return self
-
-    def all(self) -> list[Mapping[str, object]]:
-        return list(self._rows)
+    def load_frozen_selection_rows(
+        self,
+        cycle_id: str,
+    ) -> tuple[Mapping[str, object], ...]:
+        assert cycle_id == "CYCLE_20260416"
+        return self._rows
 
 
 @dataclass
@@ -964,6 +1038,74 @@ def _canonical_input_row(entity_id: str, return_1d: float) -> dict[str, object]:
             "canonical:security_master@202",
         ],
     }
+
+
+def _frozen_selection_row(
+    candidate_id: int,
+    payload: Mapping[str, object],
+    *,
+    payload_type: str | None,
+    validation_status: str = "accepted",
+) -> dict[str, object]:
+    return {
+        "candidate_id": candidate_id,
+        "payload": json.dumps(payload),
+        "payload_type": payload_type,
+        "submitted_by": "candidate-freeze",
+        "validation_status": validation_status,
+    }
+
+
+def _ex3_graph_delta_payload(
+    *,
+    delta_id: str = "delta-ex3-bridge",
+    properties: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "subsystem_id": "subsystem-news",
+        "delta_id": delta_id,
+        "delta_type": "edge_add",
+        "source_node": "ENT_STOCK_600519.SH",
+        "target_node": "ENT_STOCK_000001.SZ",
+        "relation_type": "supplier_of",
+        "properties": dict(properties or {"impact_score": 0.91}),
+        "evidence": ["evidence-ex3-bridge"],
+    }
+
+
+def _safe_ex3_graph_signal() -> dict[str, object]:
+    return {
+        "delta_id": "delta-ex3-bridge",
+        "delta_type": "edge_add",
+        "source_node": "ENT_STOCK_600519.SH",
+        "target_node": "ENT_STOCK_000001.SZ",
+        "relation_type": "supplier_of",
+        "properties": {"impact_score": 0.91},
+        "evidence_refs": ["evidence-ex3-bridge"],
+        "cycle_id": "CYCLE_20260416",
+        "candidate_id": 40,
+        "selection_ref": "cycle_candidate_selection:CYCLE_20260416",
+    }
+
+
+def _no_unsafe_ex3_graph_signal_fields(value: object) -> bool:
+    serialized = json.dumps(value, sort_keys=True, default=str).lower()
+    return not any(
+        marker in serialized
+        for marker in (
+            "raw_text",
+            "chunk",
+            "light_rag_artifact",
+            "large_blob",
+            "metadata",
+            "private_note",
+            "payload_type",
+            "submitted_by",
+            "ingest_seq",
+            "validation_status",
+            "rejection_reason",
+        )
+    )
 
 
 def _no_source_specific_input_evidence(evidence: Mapping[str, object]) -> bool:
