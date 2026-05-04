@@ -9,6 +9,7 @@ import hashlib
 import json
 from math import isfinite
 import os
+import re
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -69,19 +70,74 @@ _UNSAFE_EX3_GRAPH_PROPERTY_KEYS = frozenset(
     }
 )
 _UNSAFE_EX3_GRAPH_PROPERTY_KEY_MARKERS = ("blob", "chunk", "light_rag", "lightrag", "raw_text")
+_UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_MARKERS = (
+    "apikey",
+    "ingest",
+    "metadata",
+    "privateid",
+    "provider",
+    "queueid",
+    "rawpayload",
+    "rawtext",
+    "secretkey",
+    "sourceid",
+    "sourceref",
+    "sourcetext",
+    "sourceuri",
+    "sourceurl",
+    "submitted",
+    "submission",
+    "traceback",
+)
+_UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_PREFIXES = (
+    "ingest",
+    "private",
+    "provider",
+    "queue",
+    "raw",
+    "secret",
+    "source",
+    "submitted",
+    "submission",
+    "token",
+)
+_UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_SUFFIXES = (
+    "metadata",
+    "privateid",
+    "queueid",
+    "secretkey",
+    "submittedat",
+    "token",
+)
 _UNSAFE_EX3_GRAPH_PROPERTY_KEY_TOKENS = frozenset(
     {
+        "ingest",
+        "ingested",
+        "ingestion",
+        "key",
+        "keys",
         "log",
         "logs",
+        "metadata",
+        "private",
         "provider",
         "queue",
         "raw",
         "secret",
         "secrets",
         "source",
+        "submission",
+        "submit",
+        "submitted",
+        "submitter",
+        "token",
+        "tokens",
         "traceback",
     }
 )
+_EX3_GRAPH_PROPERTY_ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
+_EX3_GRAPH_PROPERTY_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_EX3_GRAPH_PROPERTY_SEPARATOR = re.compile(r"[^0-9A-Za-z]+")
 _MAX_EX3_GRAPH_SIGNAL_STRING_LENGTH = 2048
 _MAX_EX3_GRAPH_SIGNAL_COLLECTION_ITEMS = 50
 _MAX_EX3_GRAPH_SIGNAL_DEPTH = 4
@@ -1719,37 +1775,31 @@ def _unsafe_ex3_graph_property_key(key: object) -> bool:
     if not isinstance(key, str):
         return True
     stripped = key.strip()
-    normalized = stripped.lower()
-    if not normalized or normalized.startswith("_") or normalized.startswith("private"):
-        return True
-    if normalized in _UNSAFE_EX3_GRAPH_PROPERTY_KEYS:
-        return True
-    if normalized.endswith("_metadata"):
+    if not stripped or stripped.startswith("_"):
         return True
     key_tokens = _ex3_graph_property_key_tokens(stripped)
-    if key_tokens & _UNSAFE_EX3_GRAPH_PROPERTY_KEY_TOKENS:
+    if not key_tokens:
         return True
-    if any(marker in normalized for marker in ("provider", "queue", "secret", "traceback")):
+    normalized = "_".join(key_tokens)
+    compact = "".join(key_tokens)
+    if normalized in _UNSAFE_EX3_GRAPH_PROPERTY_KEYS:
+        return True
+    if any(marker in compact for marker in _UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_MARKERS):
+        return True
+    if compact.startswith(_UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_PREFIXES):
+        return True
+    if compact.endswith(_UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_SUFFIXES):
+        return True
+    if set(key_tokens) & _UNSAFE_EX3_GRAPH_PROPERTY_KEY_TOKENS:
         return True
     return any(marker in normalized for marker in _UNSAFE_EX3_GRAPH_PROPERTY_KEY_MARKERS)
 
 
-def _ex3_graph_property_key_tokens(key: str) -> set[str]:
-    expanded: list[str] = []
-    previous_was_lower_or_digit = False
-    for character in key:
-        if character.isupper() and previous_was_lower_or_digit:
-            expanded.append("_")
-        expanded.append(character)
-        previous_was_lower_or_digit = character.islower() or character.isdigit()
-    normalized = (
-        "".join(expanded)
-        .lower()
-        .replace("-", "_")
-        .replace(".", "_")
-        .replace(":", "_")
-    )
-    return {token for token in normalized.split("_") if token}
+def _ex3_graph_property_key_tokens(key: str) -> tuple[str, ...]:
+    expanded = _EX3_GRAPH_PROPERTY_ACRONYM_BOUNDARY.sub("_", key)
+    expanded = _EX3_GRAPH_PROPERTY_CAMEL_BOUNDARY.sub("_", expanded)
+    normalized = _EX3_GRAPH_PROPERTY_SEPARATOR.sub("_", expanded).lower()
+    return tuple(token for token in normalized.split("_") if token)
 
 
 def _load_tushare_staging_rows(

@@ -660,11 +660,16 @@ def test_write_frontend_api_ex3_graph_signals_artifact_sanitizes_payload(
     ex3_payload = _ex3_graph_delta_payload(
         properties={
             "impact_score": 0.91,
+            "businessLabel": "relationship strengthened",
             "safe_details": {
                 "direction": "positive",
                 "source": "drop",
                 "quality": "confirmed",
             },
+            "ingestSeq": "drop",
+            "submittedAt": "drop",
+            "fooMetadata": {"drop": True},
+            "candidatePrivateId": "drop",
             "provider": "drop",
             "provider_model": "drop",
             "providerName": "drop",
@@ -716,6 +721,7 @@ def test_write_frontend_api_ex3_graph_signals_artifact_sanitizes_payload(
             "target_node": "ENT_STOCK_000001.SZ",
             "relation_type": "supplier_of",
             "properties": {
+                "businessLabel": "relationship strengthened",
                 "impact_score": 0.91,
                 "safe_details": {
                     "direction": "positive",
@@ -726,6 +732,26 @@ def test_write_frontend_api_ex3_graph_signals_artifact_sanitizes_payload(
         }
     ]
     assert _only_frontend_api_ex3_graph_signal_keys(payload)
+
+
+def test_ex3_graph_property_sanitizer_filters_common_key_variants() -> None:
+    from orchestrator_adapters import p2_dry_run
+
+    assert p2_dry_run._sanitize_ex3_graph_properties(
+        {
+            "confidenceBand": "high",
+            "risk_score": 0.12,
+            "Ingest-Seq": "drop",
+            "Submitted.At": "drop",
+            "FooMetadata": {"drop": True},
+            "candidatePrivateId": "drop",
+            "apiKey": "drop",
+            "source.URL": "drop",
+        }
+    ) == {
+        "confidenceBand": "high",
+        "risk_score": 0.12,
+    }
 
 
 def test_write_frontend_api_ex3_graph_signals_artifact_rejects_cross_cycle_signal(
