@@ -9,6 +9,8 @@ import hashlib
 import json
 from math import isfinite
 import os
+import re
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, Field
@@ -28,21 +30,114 @@ _LEGACY_INPUT_TABLE_DAILY = "main.stg_daily"
 _LEGACY_INPUT_TABLE_STOCK_BASIC = "main.stg_stock_basic"
 _EX3_PAYLOAD_TYPE = "Ex-3"
 _EX3_QUEUE_ENVELOPE_FIELDS = frozenset({"payload_type", "submitted_by"})
+_FRONTEND_API_ARTIFACT_ROOT_ENV = "ORCHESTRATOR_FRONTEND_API_ARTIFACT_ROOT"
+_FRONTEND_API_EX3_GRAPH_SIGNALS_DIR = "ex3-graph-signals"
+_FRONTEND_API_EX3_GRAPH_SIGNAL_FIELDS = frozenset(
+    {
+        "cycle_id",
+        "candidate_id",
+        "delta_id",
+        "delta_type",
+        "selection_ref",
+        "source_node",
+        "target_node",
+        "relation_type",
+        "properties",
+        "evidence_refs",
+    }
+)
 _UNSAFE_EX3_GRAPH_PROPERTY_KEYS = frozenset(
     {
         "chunk",
+        "candidate_queue_id",
         "ingest_seq",
         "light_rag_artifact",
+        "log",
+        "logs",
         "metadata",
         "payload_type",
+        "private_id",
+        "provider",
+        "queue_id",
         "raw_text",
         "rejection_reason",
+        "secret",
+        "source",
         "submitted_at",
         "submitted_by",
+        "traceback",
         "validation_status",
     }
 )
 _UNSAFE_EX3_GRAPH_PROPERTY_KEY_MARKERS = ("blob", "chunk", "light_rag", "lightrag", "raw_text")
+_UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_MARKERS = (
+    "apikey",
+    "ingest",
+    "metadata",
+    "privateid",
+    "provider",
+    "queueid",
+    "rawpayload",
+    "rawtext",
+    "secretkey",
+    "sourceid",
+    "sourceref",
+    "sourcetext",
+    "sourceuri",
+    "sourceurl",
+    "submitted",
+    "submission",
+    "traceback",
+)
+_UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_PREFIXES = (
+    "ingest",
+    "private",
+    "provider",
+    "queue",
+    "raw",
+    "secret",
+    "source",
+    "submitted",
+    "submission",
+    "token",
+)
+_UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_SUFFIXES = (
+    "metadata",
+    "privateid",
+    "queueid",
+    "secretkey",
+    "submittedat",
+    "token",
+)
+_UNSAFE_EX3_GRAPH_PROPERTY_KEY_TOKENS = frozenset(
+    {
+        "ingest",
+        "ingested",
+        "ingestion",
+        "key",
+        "keys",
+        "log",
+        "logs",
+        "metadata",
+        "private",
+        "provider",
+        "queue",
+        "raw",
+        "secret",
+        "secrets",
+        "source",
+        "submission",
+        "submit",
+        "submitted",
+        "submitter",
+        "token",
+        "tokens",
+        "traceback",
+    }
+)
+_EX3_GRAPH_PROPERTY_ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
+_EX3_GRAPH_PROPERTY_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_EX3_GRAPH_PROPERTY_SEPARATOR = re.compile(r"[^0-9A-Za-z]+")
 _MAX_EX3_GRAPH_SIGNAL_STRING_LENGTH = 2048
 _MAX_EX3_GRAPH_SIGNAL_COLLECTION_ITEMS = 50
 _MAX_EX3_GRAPH_SIGNAL_DEPTH = 4
@@ -456,8 +551,10 @@ class DataPlatformTushareCurrentCycleInputProvider:
         self,
         *,
         frozen_selection_reader: FrozenSelectionReader | None = None,
+        frontend_api_artifact_root: str | os.PathLike[str] | None = None,
     ) -> None:
         self._frozen_selection_reader = frozen_selection_reader
+        self._frontend_api_artifact_root = frontend_api_artifact_root
 
     def load_current_cycle_inputs(
         self,
@@ -523,6 +620,11 @@ class DataPlatformTushareCurrentCycleInputProvider:
             "partition_date": cycle_date.isoformat(),
             "source": "data-platform:tushare-staging:frozen-candidates",
         }
+        _write_frontend_api_ex3_graph_signals_artifact(
+            cycle_id=cycle_id,
+            graph_signals=ex3_graph_signals,
+            artifact_root=self._frontend_api_artifact_root,
+        )
         return P2CurrentCycleInputs(
             feature_bundles=feature_bundles,
             evidence=evidence,
@@ -536,8 +638,10 @@ class DataPlatformCanonicalCurrentCycleInputProvider:
         self,
         *,
         frozen_selection_reader: FrozenSelectionReader | None = None,
+        frontend_api_artifact_root: str | os.PathLike[str] | None = None,
     ) -> None:
         self._frozen_selection_reader = frozen_selection_reader
+        self._frontend_api_artifact_root = frontend_api_artifact_root
 
     def load_current_cycle_inputs(
         self,
@@ -615,6 +719,11 @@ class DataPlatformCanonicalCurrentCycleInputProvider:
             "lineage_refs": lineage_refs,
         }
         _assert_provider_neutral_input_evidence(evidence)
+        _write_frontend_api_ex3_graph_signals_artifact(
+            cycle_id=cycle_id,
+            graph_signals=ex3_graph_signals,
+            artifact_root=self._frontend_api_artifact_root,
+        )
         return P2CurrentCycleInputs(
             feature_bundles=feature_bundles,
             evidence=evidence,
@@ -739,6 +848,7 @@ class P2DryRunAssetFactoryProvider:
         audit_persistence_port: P2AuditPersistencePort | None = None,
         phase2_pool_failure_rate_provider: object | None = None,
         frozen_selection_reader: FrozenSelectionReader | None = None,
+        frontend_api_artifact_root: str | os.PathLike[str] | None = None,
         provide_llm_health_probe: bool = True,
         provide_io_manager: bool = True,
         require_cycle_tag: bool = False,
@@ -746,6 +856,7 @@ class P2DryRunAssetFactoryProvider:
         self.reasoner_gateway = reasoner_gateway or DefaultReasonerRuntimeGateway()
         self.input_provider = input_provider or DataPlatformCanonicalCurrentCycleInputProvider(
             frozen_selection_reader=frozen_selection_reader,
+            frontend_api_artifact_root=frontend_api_artifact_root,
         )
         self.publish_port_factory = publish_port_factory or DataPlatformIcebergPublishPort
         self.audit_persistence_port = audit_persistence_port or AuditEvalPersistencePort()
@@ -1398,6 +1509,130 @@ def _load_frozen_ex3_graph_signals(
     return tuple(graph_signals)
 
 
+def write_frontend_api_ex3_graph_signals_artifact(
+    cycle_id: str,
+    *,
+    reader: FrozenSelectionReader | None = None,
+    artifact_root: str | os.PathLike[str] | None = None,
+) -> Path:
+    """Write the frontend-api read-only Ex-3 graph signal artifact."""
+
+    graph_signals = _load_frozen_ex3_graph_signals(cycle_id, reader=reader)
+    return _write_frontend_api_ex3_graph_signals_artifact(
+        cycle_id=cycle_id,
+        graph_signals=graph_signals,
+        artifact_root=artifact_root,
+    )
+
+
+def _write_frontend_api_ex3_graph_signals_artifact(
+    *,
+    cycle_id: str,
+    graph_signals: Sequence[Mapping[str, object]],
+    artifact_root: str | os.PathLike[str] | None = None,
+) -> Path:
+    artifact_path = _frontend_api_ex3_graph_signals_artifact_path(
+        cycle_id=cycle_id,
+        artifact_root=artifact_root,
+    )
+    payload = [
+        _frontend_api_ex3_graph_signal(signal, cycle_id=cycle_id)
+        for signal in graph_signals
+    ]
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = artifact_path.with_suffix(artifact_path.suffix + ".tmp")
+    temp_path.write_text(
+        json.dumps(payload, sort_keys=True, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    temp_path.replace(artifact_path)
+    return artifact_path
+
+
+def _frontend_api_ex3_graph_signal(
+    signal: Mapping[str, object],
+    *,
+    cycle_id: str,
+) -> dict[str, object]:
+    signal_keys = set(signal)
+    extra_keys = sorted(signal_keys - _FRONTEND_API_EX3_GRAPH_SIGNAL_FIELDS)
+    if extra_keys:
+        msg = "frontend-api Ex-3 artifact signal contains unsafe fields: "
+        raise ValueError(msg + ", ".join(extra_keys))
+    signal_cycle_id = _required_text_field(signal, "cycle_id")
+    if signal_cycle_id != cycle_id:
+        raise ValueError(
+            "frontend-api Ex-3 artifact signal cycle_id must match current cycle"
+        )
+    properties = signal.get("properties")
+    if not isinstance(properties, Mapping):
+        raise ValueError("frontend-api Ex-3 artifact signal properties must be an object")
+    evidence_refs = signal.get("evidence_refs")
+    if (
+        not isinstance(evidence_refs, Sequence)
+        or isinstance(evidence_refs, (str, bytes, bytearray))
+    ):
+        raise ValueError("frontend-api Ex-3 artifact signal evidence_refs must be a list")
+    candidate_id = signal.get("candidate_id")
+    if not isinstance(candidate_id, int) or isinstance(candidate_id, bool):
+        raise ValueError("frontend-api Ex-3 artifact signal candidate_id must be an int")
+    return {
+        "cycle_id": signal_cycle_id,
+        "candidate_id": candidate_id,
+        "delta_id": _required_text_field(signal, "delta_id"),
+        "delta_type": _required_text_field(signal, "delta_type"),
+        "selection_ref": _required_text_field(signal, "selection_ref"),
+        "source_node": _required_text_field(signal, "source_node"),
+        "target_node": _required_text_field(signal, "target_node"),
+        "relation_type": _required_text_field(signal, "relation_type"),
+        "properties": _sanitize_ex3_graph_properties(
+            cast(Mapping[str, object], properties),
+        ),
+        "evidence_refs": [str(ref) for ref in evidence_refs],
+    }
+
+
+def _frontend_api_ex3_graph_signals_artifact_path(
+    *,
+    cycle_id: str,
+    artifact_root: str | os.PathLike[str] | None = None,
+) -> Path:
+    return (
+        _frontend_api_artifact_root(artifact_root)
+        / _FRONTEND_API_EX3_GRAPH_SIGNALS_DIR
+        / _frontend_api_cycle_filename(cycle_id)
+    )
+
+
+def _frontend_api_artifact_root(
+    artifact_root: str | os.PathLike[str] | None = None,
+) -> Path:
+    if artifact_root is not None:
+        return Path(artifact_root)
+    env_root = os.environ.get(_FRONTEND_API_ARTIFACT_ROOT_ENV)
+    if env_root:
+        return Path(env_root)
+    return Path(__file__).resolve().parents[2] / "artifacts" / "frontend-api"
+
+
+def _frontend_api_cycle_filename(cycle_id: str) -> str:
+    if (
+        not cycle_id
+        or "/" in cycle_id
+        or "\\" in cycle_id
+        or cycle_id in {".", ".."}
+    ):
+        raise ValueError("frontend-api Ex-3 artifact cycle_id must be a safe filename")
+    return f"{cycle_id}.json"
+
+
+def _required_text_field(signal: Mapping[str, object], field_name: str) -> str:
+    value = signal.get(field_name)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"frontend-api Ex-3 artifact {field_name} must be non-empty")
+    return value.strip()
+
+
 def _load_frozen_selection_rows(
     cycle_id: str,
     *,
@@ -1539,14 +1774,32 @@ def _safe_ex3_graph_signal_value(value: object, *, depth: int) -> object:
 def _unsafe_ex3_graph_property_key(key: object) -> bool:
     if not isinstance(key, str):
         return True
-    normalized = key.strip().lower()
-    if not normalized or normalized.startswith("_") or normalized.startswith("private"):
+    stripped = key.strip()
+    if not stripped or stripped.startswith("_"):
         return True
+    key_tokens = _ex3_graph_property_key_tokens(stripped)
+    if not key_tokens:
+        return True
+    normalized = "_".join(key_tokens)
+    compact = "".join(key_tokens)
     if normalized in _UNSAFE_EX3_GRAPH_PROPERTY_KEYS:
         return True
-    if normalized.endswith("_metadata"):
+    if any(marker in compact for marker in _UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_MARKERS):
+        return True
+    if compact.startswith(_UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_PREFIXES):
+        return True
+    if compact.endswith(_UNSAFE_EX3_GRAPH_PROPERTY_KEY_COMPACT_SUFFIXES):
+        return True
+    if set(key_tokens) & _UNSAFE_EX3_GRAPH_PROPERTY_KEY_TOKENS:
         return True
     return any(marker in normalized for marker in _UNSAFE_EX3_GRAPH_PROPERTY_KEY_MARKERS)
+
+
+def _ex3_graph_property_key_tokens(key: str) -> tuple[str, ...]:
+    expanded = _EX3_GRAPH_PROPERTY_ACRONYM_BOUNDARY.sub("_", key)
+    expanded = _EX3_GRAPH_PROPERTY_CAMEL_BOUNDARY.sub("_", expanded)
+    normalized = _EX3_GRAPH_PROPERTY_SEPARATOR.sub("_", expanded).lower()
+    return tuple(token for token in normalized.split("_") if token)
 
 
 def _load_tushare_staging_rows(
@@ -1945,4 +2198,5 @@ __all__ = [
     "P2ReasonerUnavailable",
     "P2WorldStateDeltaPayload",
     "p2_dry_run_provider",
+    "write_frontend_api_ex3_graph_signals_artifact",
 ]
