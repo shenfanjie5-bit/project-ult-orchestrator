@@ -163,7 +163,14 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
             _canonical_input_row("ENT_STOCK_000001.SZ", -0.004),
         )
 
+    ex3_graph_signal = _safe_ex3_graph_signal()
+
+    def fake_ex3_graph_signals(cycle_id: str) -> tuple[dict[str, object], ...]:
+        assert cycle_id == "CYCLE_20260416"
+        return (ex3_graph_signal,)
+
     monkeypatch.setattr(p2_dry_run, "_load_frozen_candidate_symbols", fake_candidates)
+    monkeypatch.setattr(p2_dry_run, "_load_frozen_ex3_graph_signals", fake_ex3_graph_signals)
     import data_platform.cycle as data_platform_cycle
 
     monkeypatch.setattr(
@@ -224,6 +231,15 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
     assert "ENT_P2_A" not in committed_entities
     assert "ENT_P2_B" not in committed_entities
     assert publish_recorder.manifest_provenance is not None
+    l6_payloads = [
+        json.loads(str(call["messages"][1]["content"]))
+        for call in reasoner_recorder.calls
+        if call["metadata"]["layer"] == "L6"
+    ]
+    graph_features = l6_payloads[0]["context"]["feature_bundle"]["graph_features"]
+    assert graph_features["ex3_graph_signals"] == [ex3_graph_signal]
+    assert graph_features["same_cycle_ex3_graph_signals"] == [ex3_graph_signal]
+    assert _no_unsafe_ex3_graph_signal_fields(graph_features)
 
 
 def test_p2_dry_run_hard_stops_without_llm_before_l8_or_publish(
@@ -481,6 +497,7 @@ def test_data_platform_canonical_provider_loads_current_cycle_evidence(
         )
 
     monkeypatch.setattr(p2_dry_run, "_load_frozen_candidate_symbols", fake_candidates)
+    monkeypatch.setattr(p2_dry_run, "_load_frozen_ex3_graph_signals", lambda cycle_id: ())
     import data_platform.cycle as data_platform_cycle
 
     monkeypatch.setattr(
@@ -530,6 +547,56 @@ def test_load_frozen_candidate_symbols_rejects_synthetic_candidates(
 
     with pytest.raises(ValueError, match="synthetic|ENT_P2"):
         p2_dry_run._load_frozen_candidate_symbols("CYCLE_20260416")
+
+
+def test_load_frozen_ex3_graph_signals_sanitizes_accepted_contract_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from data_platform.cycle import repository
+    from orchestrator_adapters import p2_dry_run
+
+    payload = _ex3_graph_delta_payload(
+        properties={
+            "impact_score": 0.91,
+            "safe_details": {"direction": "positive", "chunk": "drop"},
+            "raw_text": "drop",
+            "chunk": {"text": "drop"},
+            "light_rag_artifact": {"artifact_id": "drop"},
+            "large_blob": "x" * 4096,
+            "metadata": {"source": "drop"},
+            "private_note": "drop",
+        }
+    )
+    payload["payload_type"] = "Ex-3"
+    payload["submitted_by"] = "candidate-freeze"
+    rows = [{"candidate_id": 40, "payload": json.dumps(payload)}]
+    engine = _FakeEngine(rows)
+    monkeypatch.setattr(repository, "_create_engine", lambda: engine)
+
+    signals = p2_dry_run._load_frozen_ex3_graph_signals("CYCLE_20260416")
+
+    assert signals == (
+        {
+            "delta_id": "delta-ex3-bridge",
+            "source_node": "ENT_STOCK_600519.SH",
+            "target_node": "ENT_STOCK_000001.SZ",
+            "relation_type": "supplier_of",
+            "properties": {
+                "impact_score": 0.91,
+                "safe_details": {"direction": "positive"},
+            },
+            "evidence_refs": ["evidence-ex3-bridge"],
+            "cycle_id": "CYCLE_20260416",
+            "candidate_id": 40,
+            "selection_ref": "cycle_candidate_selection:CYCLE_20260416",
+        },
+    )
+    statement, params = engine.connection.executed[0]
+    sql = str(statement)
+    assert params == {"cycle_id": "CYCLE_20260416", "payload_type": "Ex-3"}
+    assert "validation_status = 'accepted'" in sql
+    assert "payload_type = :payload_type" in sql
+    assert _no_unsafe_ex3_graph_signal_fields(signals)
 
 
 @pytest.mark.parametrize("marker", ["ENT_P2_A", "ENT_P2_B", "synthetic-current-cycle"])
@@ -698,10 +765,11 @@ class _FailingAuditPersistencePort:
 class _FakeEngine:
     def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
         self._rows = rows
+        self.connection = _FakeConnection(rows)
         self.disposed = False
 
     def connect(self) -> object:
-        return _FakeConnection(self._rows)
+        return self.connection
 
     def dispose(self) -> None:
         self.disposed = True
@@ -710,6 +778,7 @@ class _FakeEngine:
 class _FakeConnection:
     def __init__(self, rows: Sequence[Mapping[str, object]]) -> None:
         self._rows = rows
+        self.executed: list[tuple[object, Mapping[str, object]]] = []
 
     def __enter__(self) -> "_FakeConnection":
         return self
@@ -718,7 +787,12 @@ class _FakeConnection:
         return None
 
     def execute(self, statement: object, parameters: Mapping[str, object]) -> object:
-        assert parameters == {"cycle_id": "CYCLE_20260416"}
+        assert parameters["cycle_id"] == "CYCLE_20260416"
+        if "payload_type" in parameters:
+            assert parameters["payload_type"] == "Ex-3"
+        else:
+            assert parameters == {"cycle_id": "CYCLE_20260416"}
+        self.executed.append((statement, dict(parameters)))
         return _FakeResult(self._rows)
 
 
@@ -964,6 +1038,56 @@ def _canonical_input_row(entity_id: str, return_1d: float) -> dict[str, object]:
             "canonical:security_master@202",
         ],
     }
+
+
+def _ex3_graph_delta_payload(
+    *,
+    properties: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "subsystem_id": "subsystem-news",
+        "delta_id": "delta-ex3-bridge",
+        "delta_type": "edge_add",
+        "source_node": "ENT_STOCK_600519.SH",
+        "target_node": "ENT_STOCK_000001.SZ",
+        "relation_type": "supplier_of",
+        "properties": dict(properties or {"impact_score": 0.91}),
+        "evidence": ["evidence-ex3-bridge"],
+    }
+
+
+def _safe_ex3_graph_signal() -> dict[str, object]:
+    return {
+        "delta_id": "delta-ex3-bridge",
+        "source_node": "ENT_STOCK_600519.SH",
+        "target_node": "ENT_STOCK_000001.SZ",
+        "relation_type": "supplier_of",
+        "properties": {"impact_score": 0.91},
+        "evidence_refs": ["evidence-ex3-bridge"],
+        "cycle_id": "CYCLE_20260416",
+        "candidate_id": 40,
+        "selection_ref": "cycle_candidate_selection:CYCLE_20260416",
+    }
+
+
+def _no_unsafe_ex3_graph_signal_fields(value: object) -> bool:
+    serialized = json.dumps(value, sort_keys=True, default=str).lower()
+    return not any(
+        marker in serialized
+        for marker in (
+            "raw_text",
+            "chunk",
+            "light_rag_artifact",
+            "large_blob",
+            "metadata",
+            "private_note",
+            "payload_type",
+            "submitted_by",
+            "ingest_seq",
+            "validation_status",
+            "rejection_reason",
+        )
+    )
 
 
 def _no_source_specific_input_evidence(evidence: Mapping[str, object]) -> bool:

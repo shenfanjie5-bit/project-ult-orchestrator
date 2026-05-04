@@ -411,9 +411,15 @@ def production_daily_cycle_status() -> ProductionDailyCycleProviderStatus:
 
 
 def _default_graph_phase1_provider() -> object:
-    from graph_engine.providers import build_graph_phase1_provider
+    from graph_engine.providers import (
+        build_fail_closed_graph_phase1_provider,
+        build_graph_phase1_provider,
+    )
 
-    return build_graph_phase1_provider()
+    try:
+        return build_graph_phase1_provider()
+    except (EnvironmentError, RuntimeError, ValueError):
+        return build_fail_closed_graph_phase1_provider()
 
 
 def _collect(method_name: str, providers: Sequence[object]) -> tuple[object, ...]:
