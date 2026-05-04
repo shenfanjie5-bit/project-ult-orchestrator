@@ -8,7 +8,7 @@ on:
 
 jobs:
   # Existing full-suite lane preserved — installs sibling runtime repos
-  # because Actions checks out only orchestrator, plus shared fixtures.
+  # because Actions checks out only orchestrator.
   ci:
     runs-on: ubuntu-latest
     steps:
@@ -16,8 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install (full, incl. sibling runtimes + shared fixtures)
-        run: pip install -e ".[dev,shared-fixtures,full-ci]"
+      - name: Install (full, incl. sibling runtimes)
+        run: pip install -e ".[dev,full-ci]"
       - name: Tests
         run: python -m pytest
 
