@@ -418,7 +418,7 @@ def _default_graph_phase1_provider() -> object:
 
     try:
         return build_graph_phase1_provider()
-    except (EnvironmentError, RuntimeError, ValueError):
+    except EnvironmentError:
         return build_fail_closed_graph_phase1_provider()
 
 
