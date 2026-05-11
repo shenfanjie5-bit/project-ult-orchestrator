@@ -76,7 +76,8 @@ def test_p2_dry_run_materializes_current_cycle_l8_and_manifest_handoff(
     assert {dagster.AssetKey([stage]) for stage in PHASE2_STAGE_KEYS} <= materialized_keys
     assert dagster.AssetKey([PHASE3_FORMAL_COMMIT_ASSET_KEY]) in materialized_keys
     assert dagster.AssetKey([PHASE3_MANIFEST_ASSET_KEY]) in materialized_keys
-    assert reasoner_recorder.layers == ["L4", "L6", "L6"]
+    assert reasoner_recorder.layers[0] == "L4"
+    assert reasoner_recorder.layers.count("L6") == 20
     assert provenance is not None
     assert provenance["cycle_id"] == "CYCLE_20260416"
     assert provenance["current_cycle_id"] == "CYCLE_20260416"
@@ -101,10 +102,9 @@ def test_p2_dry_run_materializes_current_cycle_l8_and_manifest_handoff(
     assert formal_commit.state.input_evidence["selection_ref"] == (
         "cycle_candidate_selection:CYCLE_20260416"
     )
-    assert formal_commit.state.input_evidence["entity_ids"] == [
-        "ENT_STOCK_600519.SH",
-        "ENT_STOCK_000001.SZ",
-    ]
+    assert formal_commit.state.input_evidence["entity_ids"] == list(
+        _static_manifest_targets()
+    )
     assert formal_commit.state.input_evidence["canonical_dataset_refs"] == [
         "price_bar",
         "security_master",
@@ -115,8 +115,8 @@ def test_p2_dry_run_materializes_current_cycle_l8_and_manifest_handoff(
         for call in publish_recorder.commit_calls
         if call["object_key"] == "official_alpha_pool"
     )
-    committed_entities = set(pool_payload["selected_entities"])
-    assert "ENT_STOCK_600519.SH" in committed_entities
+    committed_entities = tuple(pool_payload["selected_entities"])
+    assert committed_entities == _static_manifest_targets()
     assert "ENT_P2_A" not in committed_entities
     assert "ENT_P2_B" not in committed_entities
 
@@ -149,17 +149,24 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
     ) -> tuple[dict[str, object], ...]:
         assert cycle_id == "CYCLE_20260416"
         assert selection_ref == "cycle_candidate_selection:CYCLE_20260416"
-        assert tuple(candidate_ids) == ("600519.SH", "000001.SZ")
+        assert tuple(candidate_ids) == _static_candidate_refs()
         assert as_of_snapshot is None
-        return (
-            _canonical_input_row("ENT_STOCK_600519.SH", 0.012),
-            _canonical_input_row("ENT_STOCK_000001.SZ", -0.004),
+        return tuple(
+            _canonical_input_row(entity_id, 0.012 - (index * 0.001))
+            for index, entity_id in enumerate(_static_manifest_targets())
         )
 
     ex3_graph_signal = _safe_ex3_graph_signal()
     frozen_reader = _FrozenSelectionReader(
         (
-            _frozen_selection_row(10, {"ts_code": "600519.SH"}, payload_type="Ex-1"),
+            *(
+                _frozen_selection_row(
+                    10 + index,
+                    {"ts_code": candidate_ref},
+                    payload_type="Ex-1",
+                )
+                for index, candidate_ref in enumerate(_static_candidate_refs())
+            ),
             _frozen_selection_row(
                 40,
                 {
@@ -169,7 +176,6 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
                 },
                 payload_type="Ex-3",
             ),
-            _frozen_selection_row(11, {"ts_code": "000001.SZ"}, payload_type="Ex-1"),
         )
     )
     import data_platform.cycle as data_platform_cycle
@@ -221,17 +227,16 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
     committed_entities = set(pool_payload["selected_entities"])
 
     assert result.success is True
-    assert formal_commit.state.input_evidence["candidate_ids"] == [10, 11]
-    assert formal_commit.state.input_evidence["entity_ids"] == [
-        "ENT_STOCK_600519.SH",
-        "ENT_STOCK_000001.SZ",
-    ]
+    assert formal_commit.state.input_evidence["candidate_ids"] == list(range(10, 30))
+    assert formal_commit.state.input_evidence["entity_ids"] == list(
+        _static_manifest_targets()
+    )
     assert formal_commit.state.input_evidence["canonical_snapshot_ids"] == {
         "price_bar": 101,
         "security_master": 202,
     }
     assert _no_source_specific_input_evidence(formal_commit.state.input_evidence)
-    assert committed_entities == {"ENT_STOCK_600519.SH", "ENT_STOCK_000001.SZ"}
+    assert committed_entities == set(_static_manifest_targets())
     assert "ENT_P2_A" not in committed_entities
     assert "ENT_P2_B" not in committed_entities
     assert publish_recorder.manifest_provenance is not None
@@ -248,6 +253,218 @@ def test_p2_dry_run_handoff_uses_data_platform_canonical_provider(
     assert graph_features["same_cycle_ex3_graph_signals"] == [ex3_graph_signal]
     assert _no_unsafe_ex3_graph_signal_fields(graph_features)
     assert json.loads(artifact_path.read_text(encoding="utf-8")) == [ex3_graph_signal]
+
+
+def test_p2_dry_run_l5_uses_exactly_20_manifest_targets(
+    dagster_module: object,
+    dagster_instance: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
+
+    from audit_eval.audit import InMemoryFormalAuditStorageAdapter
+    from orchestrator.definitions import build_definitions
+    from orchestrator_adapters.p2_dry_run import (
+        AuditEvalPersistencePort,
+        DefaultReasonerRuntimeGateway,
+        P2DryRunAssetFactoryProvider,
+    )
+
+    reasoner_recorder = _ReasonerRecorder()
+    publish_recorder = _PublishRecorder()
+    provider = P2DryRunAssetFactoryProvider(
+        reasoner_gateway=DefaultReasonerRuntimeGateway(
+            client_factory=reasoner_recorder.client_factory,
+            health_probe=_reasoner_health_probe(available=True),
+        ),
+        input_provider=_StaticCurrentCycleInputProvider(
+            include_extra_context_bundle=True,
+        ),
+        publish_port_factory=lambda: _FakePublishPort(publish_recorder),
+        audit_persistence_port=AuditEvalPersistencePort(
+            storage_factory=InMemoryFormalAuditStorageAdapter,
+        ),
+    )
+    defs = build_definitions(
+        module_factories=[
+            _fake_phase0_provider(dagster),
+            _fake_phase1_provider(dagster),
+            provider,
+        ],
+        policy_path=stub_policy_path,
+    )
+
+    result = defs.get_job_def("daily_cycle_job").execute_in_process(
+        instance=dagster_instance,
+        tags={"cycle_id": "CYCLE_20260416"},
+    )
+
+    pool_payload = next(
+        call["payload"]
+        for call in publish_recorder.commit_calls
+        if call["object_key"] == "official_alpha_pool"
+    )
+    alpha_payload = next(
+        call["payload"]
+        for call in publish_recorder.commit_calls
+        if call["object_key"] == "alpha_result_snapshot"
+    )
+    recommendation_payload = next(
+        call["payload"]
+        for call in publish_recorder.commit_calls
+        if call["object_key"] == "recommendation_snapshot"
+    )
+    l6_payload_entity_ids = tuple(
+        json.loads(str(call["messages"][1]["content"]))["entity_id"]
+        for call in reasoner_recorder.calls
+        if call["metadata"]["layer"] == "L6"
+    )
+
+    assert result.success is True
+    assert tuple(pool_payload["selected_entities"]) == _static_manifest_targets()
+    assert pool_payload["observation_pool_size"] == 20
+    assert pool_payload["official_alpha_pool_capacity"] == 20
+    assert l6_payload_entity_ids == _static_manifest_targets()
+    assert tuple(item["entity_id"] for item in alpha_payload["items"]) == (
+        _static_manifest_targets()
+    )
+    assert tuple(item["entity_id"] for item in recommendation_payload["items"]) == (
+        _static_manifest_targets()
+    )
+    assert _EXTRA_CONTEXT_ENTITY_ID not in pool_payload["selected_entities"]
+    assert _EXTRA_CONTEXT_ENTITY_ID not in l6_payload_entity_ids
+    assert _EXTRA_CONTEXT_ENTITY_ID not in {
+        item["entity_id"] for item in recommendation_payload["items"]
+    }
+
+
+@pytest.mark.parametrize("target_count", [19, 21])
+def test_p2_dry_run_manifest_target_count_fails_before_publish(
+    target_count: int,
+    dagster_module: object,
+    dagster_instance: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
+
+    from audit_eval.audit import InMemoryFormalAuditStorageAdapter
+    from orchestrator.definitions import build_definitions
+    from orchestrator.jobs.phase2 import PHASE2_STAGE_KEYS
+    from orchestrator.jobs.phase3 import (
+        PHASE3_FORMAL_COMMIT_ASSET_KEY,
+        PHASE3_MANIFEST_ASSET_KEY,
+    )
+    from orchestrator_adapters.p2_dry_run import (
+        AuditEvalPersistencePort,
+        DefaultReasonerRuntimeGateway,
+        P2DryRunAssetFactoryProvider,
+    )
+
+    reasoner_recorder = _ReasonerRecorder()
+    publish_recorder = _PublishRecorder()
+    provider = P2DryRunAssetFactoryProvider(
+        reasoner_gateway=DefaultReasonerRuntimeGateway(
+            client_factory=reasoner_recorder.client_factory,
+            health_probe=_reasoner_health_probe(available=True),
+        ),
+        input_provider=_StaticCurrentCycleInputProvider(
+            manifest_targets=_static_manifest_targets(target_count),
+        ),
+        publish_port_factory=lambda: _FakePublishPort(publish_recorder),
+        audit_persistence_port=AuditEvalPersistencePort(
+            storage_factory=InMemoryFormalAuditStorageAdapter,
+        ),
+    )
+    defs = build_definitions(
+        module_factories=[
+            _fake_phase0_provider(dagster),
+            _fake_phase1_provider(dagster),
+            provider,
+        ],
+        policy_path=stub_policy_path,
+    )
+
+    result = defs.get_job_def("daily_cycle_job").execute_in_process(
+        instance=dagster_instance,
+        raise_on_error=False,
+        tags={"cycle_id": "CYCLE_20260416"},
+    )
+    materialized_keys = asset_materialization_keys(result)
+
+    assert result.success is False
+    assert reasoner_recorder.layers == ["L4"]
+    assert dagster.AssetKey([PHASE2_STAGE_KEYS[7]]) not in materialized_keys
+    assert dagster.AssetKey([PHASE3_FORMAL_COMMIT_ASSET_KEY]) not in materialized_keys
+    assert dagster.AssetKey([PHASE3_MANIFEST_ASSET_KEY]) not in materialized_keys
+    assert publish_recorder.commit_calls == []
+    assert publish_recorder.manifest_provenance is None
+
+
+def test_p2_dry_run_missing_typed_manifest_targets_fails_before_publish(
+    dagster_module: object,
+    dagster_instance: object,
+    stub_policy_path: str,
+    tmp_dbt_project: Path,
+) -> None:
+    dagster = dagster_module
+
+    from audit_eval.audit import InMemoryFormalAuditStorageAdapter
+    from orchestrator.definitions import build_definitions
+    from orchestrator.jobs.phase3 import PHASE3_FORMAL_COMMIT_ASSET_KEY
+    from orchestrator_adapters.p2_dry_run import (
+        AuditEvalPersistencePort,
+        DefaultReasonerRuntimeGateway,
+        P2DryRunAssetFactoryProvider,
+    )
+
+    class LegacySequenceInputProvider:
+        def load_current_cycle_inputs(
+            self,
+            *,
+            cycle_id: str,
+            graph_snapshot: str,
+        ) -> object:
+            typed_inputs = _StaticCurrentCycleInputProvider().load_current_cycle_inputs(
+                cycle_id=cycle_id,
+                graph_snapshot=graph_snapshot,
+            )
+            return typed_inputs.feature_bundles
+
+    publish_recorder = _PublishRecorder()
+    provider = P2DryRunAssetFactoryProvider(
+        reasoner_gateway=DefaultReasonerRuntimeGateway(
+            client_factory=_ReasonerRecorder().client_factory,
+            health_probe=_reasoner_health_probe(available=True),
+        ),
+        input_provider=LegacySequenceInputProvider(),
+        publish_port_factory=lambda: _FakePublishPort(publish_recorder),
+        audit_persistence_port=AuditEvalPersistencePort(
+            storage_factory=InMemoryFormalAuditStorageAdapter,
+        ),
+    )
+    defs = build_definitions(
+        module_factories=[
+            _fake_phase0_provider(dagster),
+            _fake_phase1_provider(dagster),
+            provider,
+        ],
+        policy_path=stub_policy_path,
+    )
+
+    result = defs.get_job_def("daily_cycle_job").execute_in_process(
+        instance=dagster_instance,
+        raise_on_error=False,
+        tags={"cycle_id": "CYCLE_20260416"},
+    )
+
+    assert result.success is False
+    assert dagster.AssetKey(
+        [PHASE3_FORMAL_COMMIT_ASSET_KEY]
+    ) not in asset_materialization_keys(result)
+    assert publish_recorder.commit_calls == []
+    assert publish_recorder.manifest_provenance is None
 
 
 def test_p2_dry_run_hard_stops_without_llm_before_l8_or_publish(
@@ -494,8 +711,8 @@ def test_data_platform_canonical_provider_loads_current_cycle_evidence(
         assert tuple(candidate_ids) == ("600519.SH", "000001.SZ")
         assert as_of_snapshot is None
         return (
-            _canonical_input_row("ENT_STOCK_600519.SH", 0.012),
             _canonical_input_row("ENT_STOCK_000001.SZ", -0.004),
+            _canonical_input_row("ENT_STOCK_600519.SH", 0.012),
         )
 
     frozen_reader = _FrozenSelectionReader(
@@ -523,9 +740,13 @@ def test_data_platform_canonical_provider_loads_current_cycle_evidence(
     )
 
     assert [bundle.entity_id for bundle in inputs.feature_bundles] == [
+        "ENT_STOCK_000001.SZ",
+        "ENT_STOCK_600519.SH",
+    ]
+    assert inputs.manifest_targets == (
         "ENT_STOCK_600519.SH",
         "ENT_STOCK_000001.SZ",
-    ]
+    )
     assert inputs.evidence["candidate_ids"] == [10, 11]
     assert inputs.evidence["entity_ids"] == [
         "ENT_STOCK_600519.SH",
@@ -877,57 +1098,127 @@ class _FakeStructuredClient:
         )
 
 
+_STATIC_MANIFEST_TARGETS = (
+    "ENT_STOCK_600519.SH",
+    "ENT_STOCK_000001.SZ",
+    "ENT_STOCK_000002.SZ",
+    "ENT_STOCK_000003.SZ",
+    "ENT_STOCK_000004.SZ",
+    "ENT_STOCK_000005.SZ",
+    "ENT_STOCK_000006.SZ",
+    "ENT_STOCK_000007.SZ",
+    "ENT_STOCK_000008.SZ",
+    "ENT_STOCK_000009.SZ",
+    "ENT_STOCK_000010.SZ",
+    "ENT_STOCK_000011.SZ",
+    "ENT_STOCK_000012.SZ",
+    "ENT_STOCK_000013.SZ",
+    "ENT_STOCK_000014.SZ",
+    "ENT_STOCK_000015.SZ",
+    "ENT_STOCK_000016.SZ",
+    "ENT_STOCK_000017.SZ",
+    "ENT_STOCK_000018.SZ",
+    "ENT_STOCK_000019.SZ",
+    "ENT_STOCK_000020.SZ",
+)
+_EXTRA_CONTEXT_ENTITY_ID = "ENT_STOCK_999999.SZ"
+
+
+def _static_manifest_targets(count: int = 20) -> tuple[str, ...]:
+    return _STATIC_MANIFEST_TARGETS[:count]
+
+
+def _static_candidate_refs(count: int = 20) -> tuple[str, ...]:
+    return tuple(
+        entity_id.removeprefix("ENT_STOCK_")
+        for entity_id in _static_manifest_targets(count)
+    )
+
+
+def _static_feature_bundle(
+    *,
+    cycle_id: str,
+    graph_snapshot: str,
+    entity_id: str,
+    index: int,
+    candidate_score: float | None = None,
+) -> object:
+    from main_core.common.schemas import FeatureSignalBundle
+
+    score = candidate_score if candidate_score is not None else 0.02 - (index * 0.001)
+    return FeatureSignalBundle(
+        cycle_id=cycle_id,
+        entity_id=entity_id,
+        feature_values={"momentum": score, "close": 1700.0 - index},
+        signal_values={
+            "origin": "canonical-current-cycle",
+            "trade_date": "2026-04-16",
+            "canonical_dataset_refs": ["price_bar", "security_master"],
+            "candidate_score": score,
+        },
+        graph_features={"graph_snapshot_ref": graph_snapshot},
+        feature_weight_multiplier={"momentum": 1.0, "close": 1.0},
+    )
+
+
 class _StaticCurrentCycleInputProvider:
+    def __init__(
+        self,
+        *,
+        manifest_targets: Sequence[str] | None = None,
+        include_extra_context_bundle: bool = False,
+    ) -> None:
+        self._manifest_targets = tuple(manifest_targets or _static_manifest_targets())
+        self._include_extra_context_bundle = include_extra_context_bundle
+
     def load_current_cycle_inputs(
         self,
         *,
         cycle_id: str,
         graph_snapshot: str,
     ) -> object:
-        from main_core.common.schemas import FeatureSignalBundle
         from orchestrator_adapters.p2_dry_run import P2CurrentCycleInputs
 
+        feature_bundles = tuple(
+            _static_feature_bundle(
+                cycle_id=cycle_id,
+                graph_snapshot=graph_snapshot,
+                entity_id=entity_id,
+                index=index,
+            )
+            for index, entity_id in enumerate(self._manifest_targets)
+        )
+        if self._include_extra_context_bundle:
+            feature_bundles = (
+                *feature_bundles,
+                _static_feature_bundle(
+                    cycle_id=cycle_id,
+                    graph_snapshot=graph_snapshot,
+                    entity_id=_EXTRA_CONTEXT_ENTITY_ID,
+                    index=99,
+                    candidate_score=99.0,
+                ),
+            )
+
         return P2CurrentCycleInputs(
-            feature_bundles=(
-                FeatureSignalBundle(
-                    cycle_id=cycle_id,
-                    entity_id="ENT_STOCK_600519.SH",
-                    feature_values={"momentum": 0.012, "close": 1700.0},
-                    signal_values={
-                        "origin": "canonical-current-cycle",
-                        "trade_date": "2026-04-16",
-                        "canonical_dataset_refs": ["price_bar", "security_master"],
-                    },
-                    graph_features={"graph_snapshot_ref": graph_snapshot},
-                    feature_weight_multiplier={"momentum": 1.0, "close": 1.0},
-                ),
-                FeatureSignalBundle(
-                    cycle_id=cycle_id,
-                    entity_id="ENT_STOCK_000001.SZ",
-                    feature_values={"momentum": -0.004, "close": 11.0},
-                    signal_values={
-                        "origin": "canonical-current-cycle",
-                        "trade_date": "2026-04-16",
-                        "canonical_dataset_refs": ["price_bar", "security_master"],
-                    },
-                    graph_features={"graph_snapshot_ref": graph_snapshot},
-                    feature_weight_multiplier={"momentum": 1.0, "close": 1.0},
-                ),
-            ),
+            feature_bundles=feature_bundles,
+            manifest_targets=self._manifest_targets,
             evidence={
                 "cycle_id": cycle_id,
                 "trade_date": "2026-04-16",
                 "selection_ref": f"cycle_candidate_selection:{cycle_id}",
-                "candidate_ids": [10, 11],
-                "entity_ids": ["ENT_STOCK_600519.SH", "ENT_STOCK_000001.SZ"],
+                "candidate_ids": list(range(10, 10 + len(self._manifest_targets))),
+                "entity_ids": list(self._manifest_targets),
                 "canonical_dataset_refs": ["price_bar", "security_master"],
                 "canonical_snapshot_ids": {"price_bar": 101, "security_master": 202},
-                "row_count": 2,
+                "row_count": len(self._manifest_targets),
                 "lineage_refs": [
                     f"cycle:{cycle_id}",
                     f"selection:cycle_candidate_selection:{cycle_id}",
-                    "candidate:10",
-                    "candidate:11",
+                    *[
+                        f"candidate:{candidate_id}"
+                        for candidate_id in range(10, 10 + len(self._manifest_targets))
+                    ],
                     "canonical:price_bar@101",
                     "canonical:security_master@202",
                 ],
