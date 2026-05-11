@@ -23,6 +23,7 @@ _DEFAULT_HEALTH_TIMEOUT_S = 30.0
 _SOURCE_KIND = "current-cycle"
 _SOURCE_LAYER = "L8"
 _RECOMMENDATION_OBJECT_KEY = "recommendation_snapshot"
+_MVP20_MANIFEST_TARGET_COUNT = 20
 _REQUIRED_RECOMMENDATION_LAYERS = frozenset({"L4", "L6", "L7", "L8"})
 _FORBIDDEN_PROVENANCE_MARKERS = ("smoke", "fixture", "historical")
 _FORBIDDEN_INPUT_MARKERS = (*_FORBIDDEN_PROVENANCE_MARKERS, "synthetic", "ent_p2")
@@ -186,6 +187,7 @@ class P2CurrentCycleInputs:
     """Frozen current-cycle inputs loaded from data-platform for P2 L1."""
 
     feature_bundles: tuple[object, ...]
+    manifest_targets: tuple[str, ...]
     evidence: Mapping[str, object]
 
 
@@ -627,6 +629,7 @@ class DataPlatformTushareCurrentCycleInputProvider:
         )
         return P2CurrentCycleInputs(
             feature_bundles=feature_bundles,
+            manifest_targets=tuple(str(bundle.entity_id) for bundle in feature_bundles),
             evidence=evidence,
         )
 
@@ -675,6 +678,7 @@ class DataPlatformCanonicalCurrentCycleInputProvider:
                 "frozen candidates",
             )
 
+        manifest_targets = _canonical_manifest_targets_from_rows(candidate_refs, rows)
         feature_bundles = tuple(
             _feature_bundle_from_canonical_row(
                 cycle_id=cycle_id,
@@ -684,7 +688,7 @@ class DataPlatformCanonicalCurrentCycleInputProvider:
             )
             for row in rows
         )
-        entity_ids = [str(row["entity_id"]) for row in rows]
+        entity_ids = list(manifest_targets)
         canonical_dataset_refs = sorted(
             {
                 str(dataset_ref)
@@ -726,8 +730,62 @@ class DataPlatformCanonicalCurrentCycleInputProvider:
         )
         return P2CurrentCycleInputs(
             feature_bundles=feature_bundles,
+            manifest_targets=manifest_targets,
             evidence=evidence,
         )
+
+
+def _canonical_manifest_targets_from_rows(
+    candidate_refs: Sequence[str],
+    rows: Sequence[Mapping[str, object]],
+) -> tuple[str, ...]:
+    rows_by_candidate_ref: dict[str, str] = {}
+    for row in rows:
+        entity_id = str(row.get("entity_id", "")).strip()
+        if not entity_id:
+            raise ValueError("P2 canonical current-cycle row requires entity_id")
+
+        lineage_refs = {str(item) for item in _sequence_value(row.get("lineage_refs"))}
+        matched_refs = [
+            candidate_ref
+            for candidate_ref in candidate_refs
+            if f"candidate:{candidate_ref}" in lineage_refs
+        ]
+        if not matched_refs:
+            matched_refs = [
+                candidate_ref
+                for candidate_ref in candidate_refs
+                if entity_id == candidate_ref or entity_id.endswith(candidate_ref)
+            ]
+        if not matched_refs:
+            raise ValueError(
+                "P2 canonical current-cycle row does not match frozen candidate refs: "
+                f"{entity_id}"
+            )
+        if len(matched_refs) > 1:
+            raise ValueError(
+                "P2 canonical current-cycle row ambiguously matches frozen candidate refs: "
+                f"{entity_id}"
+            )
+        candidate_ref = matched_refs[0]
+        if candidate_ref in rows_by_candidate_ref:
+            raise ValueError(
+                "P2 canonical current-cycle rows duplicate frozen candidate ref: "
+                f"{candidate_ref}"
+            )
+        rows_by_candidate_ref[candidate_ref] = entity_id
+
+    missing_refs = [
+        candidate_ref
+        for candidate_ref in candidate_refs
+        if candidate_ref not in rows_by_candidate_ref
+    ]
+    if missing_refs:
+        raise ValueError(
+            "P2 canonical current-cycle inputs missing frozen candidate refs: "
+            + ", ".join(missing_refs)
+        )
+    return tuple(rows_by_candidate_ref[candidate_ref] for candidate_ref in candidate_refs)
 
 
 class AuditEvalPersistencePort:
@@ -870,7 +928,7 @@ class P2DryRunAssetFactoryProvider:
 
         from main_core.common.contexts import AlphaAnalysisContext
         from main_core.l4_world_state import derive_world_state
-        from main_core.l5_universe import select_official_alpha_pool
+        from main_core.l5_universe import select_mvp20_decision_pool
         from main_core.l6_alpha import SinglePromptAnalyzer, analyze_stock
         from main_core.l7_recommendation import generate_recommendations
         from main_core.l8_publish.manifest import commit_formal_objects
@@ -928,10 +986,10 @@ class P2DryRunAssetFactoryProvider:
         @dagster.asset(name=PHASE2_STAGE_KEYS[4], group_name=PHASE2_GROUP_NAME)
         def l5(l4, l3):
             feature_bundles = _feature_bundles_from_inputs(l3)
-            return select_official_alpha_pool(
+            return select_mvp20_decision_pool(
                 l4,
                 feature_bundles,
-                capacity=len(feature_bundles),
+                _manifest_targets_from_inputs(l3),
             )
 
         @dagster.asset(name=PHASE2_STAGE_KEYS[5], group_name=PHASE2_GROUP_NAME)
@@ -1213,6 +1271,29 @@ def _feature_bundles_from_inputs(value: object) -> tuple[object, ...]:
     if not feature_bundles:
         raise ValueError("P2 dry-run requires non-empty current-cycle feature input")
     return feature_bundles
+
+
+def _manifest_targets_from_inputs(value: object) -> tuple[str, ...]:
+    if not isinstance(value, P2CurrentCycleInputs):
+        raise TypeError("P2 manifest targets must come from P2CurrentCycleInputs")
+
+    manifest_targets = value.manifest_targets
+    if not isinstance(manifest_targets, tuple):
+        raise TypeError("P2 manifest_targets must be a typed tuple")
+    if len(manifest_targets) != _MVP20_MANIFEST_TARGET_COUNT:
+        raise ValueError("P2 MVP20 manifest_targets must contain exactly 20 entity ids")
+
+    normalized_targets: list[str] = []
+    seen_targets: set[str] = set()
+    for entity_id in manifest_targets:
+        if not isinstance(entity_id, str) or not entity_id.strip():
+            raise ValueError("P2 manifest_targets must contain non-empty entity ids")
+        normalized_entity_id = entity_id.strip()
+        if normalized_entity_id in seen_targets:
+            raise ValueError("P2 manifest_targets must not contain duplicate entity ids")
+        normalized_targets.append(normalized_entity_id)
+        seen_targets.add(normalized_entity_id)
+    return tuple(normalized_targets)
 
 
 def _input_evidence_from_inputs(value: object) -> Mapping[str, object]:
